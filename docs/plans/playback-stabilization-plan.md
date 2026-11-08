@@ -10,21 +10,20 @@ This plan tracks technical stabilization tasks for video playback, audio wavefor
 - [x] Configure `libmpv` with `vo=gpu` and `gpu-context=android` for native surface rendering.
 - [x] Set `hwdec=auto-safe` with automatic fallback to FFmpeg `libavcodec` software decoding for AVC High 4:2:2 `yuv422p`.
 - [x] Connect `time-pos` property observer to dispatch playhead updates to main thread.
-- [x] Integrate precise seeking commands using `seek <sec> absolute+exact` and relative nudges using `seek <delta> relative+exact`.
-- [x] Prevent redundant subtitle reloads on normal playback frames or minor scrubbing deltas by decoupling content revision from playhead motion.
+- [ ] Resolve audio track detachment and muted playback during continuous video execution.
+- [ ] Fix subtitle track disappearing during mid-stream playback over long video durations.
 
 ### 1.2 Dialogue Selection and Synchronization
 - [x] Implement `ActiveSubtitleResolver` as a pure function adhering to half-open interval semantics `start <= time < end`.
 - [x] Ensure `ActiveSubtitleResolver` excludes comment lines from active dialogue resolution.
-- [x] Implement single in-memory session pattern via `ProjectSessionManager` to eliminate divergence between editor state and player tracks.
-- [x] Automatically seek video playhead to `event.start` whenever a dialogue line is selected in either timeline or table view.
+- [ ] Connect dialogue text input directly to the selected active line state.
+- [ ] Automatically seek video playhead to `event.start` whenever a dialogue line is selected in timeline or grid.
 
 ### 1.3 Audio Timeline and Waveform Scrubbing
-- [x] Lock amplitude sampling to absolute time bucket indices derived from sample rate to prevent waveform distortion or shimmering during horizontal scrub.
+- [x] Lock amplitude sampling to absolute time bucket indices derived from sample rate.
 - [x] Streamline amplitude extraction using `Dispatchers.IO` and direct PCM downsampling to 50 buckets per second.
-- [x] Connect continuous scrubbing drag directly to `seekPlayheadTo` to drive synchronized video frame updates.
-- [x] Defer subtitle file reloads during timing handle drag until user releases touch to maintain 60 frames per second interaction.
-
+- [ ] Synchronize continuous waveform scrubbing drag directly with frame-accurate video seeking.
+- [ ] Eliminate touch stutter and maintain 60 FPS response during timeline scrub.
 ---
 
 ## 2. Unit Test Plan

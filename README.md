@@ -14,15 +14,15 @@ For an architectural breakdown and benchmark against other tools, refer to [Feat
 
 ## 2. Technical Milestones and Status
 
-The development of SubEdit is organized across five functional milestones:
+The development of SubEdit is organized across functional milestones:
 
 | Milestone | Status | Description |
 | :--- | :--- | :--- |
 | **Core Engine** | Completed | In-memory ASS v4+ domain models, microsecond `SubTime` arithmetic, lossless tokenizer, SRT parser and exporter. |
-| **Media Core** | Completed | Native `libmpv` integration, FFmpeg software decoding fallback for AVC High 4:2:2 `yuv422p`, and embedded `libass` rendering. |
-| **Session Synchronization** | Completed | Centralized `ProjectSessionManager`, pure function `ActiveSubtitleResolver`, and frame-accurate playhead tracking. |
-| **Waveform Timing** | Completed | Continuous center-playhead audio canvas, 50 buckets per second PCM peak extraction, and locked time-bucket scrubbing. |
-| **Release Packaging** | Completed | Multi-ABI shared libraries (`arm64-v8a`, `armeabi-v7a`, `x86`, `x86_64`), asset font bundling, and debug APK validation. |
+| **Media Core & Sync** | In Progress | Native `libmpv` integration, FFmpeg software decoding fallback for AVC High 4:2:2 `yuv422p`, and playhead tracking stabilization. |
+| **Waveform Timing** | Stabilizing | Center-playhead audio canvas, 50 buckets/sec PCM peak extraction, and locked time-bucket scrubbing. |
+| **Visual Typesetting** | Planned | Touch-based `\pos` and `\move` coordinate dragging with intelligent tag injection. |
+| **Packaging & Optimization**| Planned | Multi-ABI split optimization to trim release APK footprint down to ~45 MB. |
 
 ---
 
