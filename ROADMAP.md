@@ -1,66 +1,70 @@
 # SubEdit Development Roadmap
 
-This document outlines the development trajectory and milestone delivery status for the SubEdit native Android subtitle editor.
+This roadmap tracks the development milestones, active stabilization tasks, and planned feature expansions for SubEdit.
 
-For technical differences between SubEdit, Aegisub Desktop, and standard mobile tools, see [Feature and Architecture Comparison](docs/COMPARISON.md).
+Current Focus: **Milestone 2 - Playback Stabilization & Event Synchronization (In Progress)**
 
 ---
 
-## Milestone 1: Core Engine
+## Milestone 1: Core Architecture & In-Memory Domain
 **Status**: Completed
 
-- [x] High-precision `SubTime` value class storing time in microseconds (`Long`) to prevent floating-point rounding errors.
-- [x] Full `[Script Info]`, `[V4+ Styles]`, and `[Events]` ASS domain data models with immutability guarantees.
-- [x] Lossless tag preservation in editor textarea ensuring manual curly bracket overrides are never stripped.
-- [x] Bi-directional Aegisub and SubRip parser supporting ASS and SRT import and export.
-- [x] Crunchyroll and Aegisub keyframe parser supporting format v1 with variable and fixed frame rates.
+- [x] High-precision `SubTime` value class storing microsecond timestamps (`Long`) to prevent rounding errors.
+- [x] Immutable ASS v4+ data structures for `[Script Info]`, `[V4+ Styles]`, and `[Events]`.
+- [x] Bi-directional ASS and SRT parsing with formatting preservation.
+- [x] Aegisub Keyframe Format v1 parser supporting fixed and variable frame rates.
+- [x] Basic Jetpack Compose workspace layout with 16:9 monitor and bottom control docks.
 
 ---
 
-## Milestone 2: Media Core
-**Status**: Completed
+## Milestone 2: Playback Engine & Event Synchronization
+**Status**: In Progress (Active Stabilization)
 
-- [x] Native `libmpv` Android integration using `mpv-android-lib` with GPU rendering context (`vo=gpu`, `gpu-context=android`).
-- [x] Hardware decoding with automatic fallback (`hwdec=auto-safe`) to FFmpeg `libavcodec` software decoding for AVC High 4:2:2 `yuv422p` video profiles.
-- [x] Native `libass` subtitle renderer embedded inside `libmpv` with local Crunchyroll font bundling via `sub-fonts-dir`.
-- [x] Precise seeking via `seek <sec> absolute+exact` and relative nudging via `seek <delta> relative+exact`.
-- [x] Decoupling of subtitle track reloads from playhead motion to prevent disk write thrashing during playback.
-
----
-
-## Milestone 3: Session Synchronization
-**Status**: Completed
-
-- [x] Centralized `ProjectSessionManager` maintaining single in-memory state for script metadata, styles, and dialogues.
-- [x] Pure function `ActiveSubtitleResolver` implementing half-open interval matching `start <= time < end`.
-- [x] Automatic playhead seeking to line start timestamp when a dialogue event is selected on timeline or table.
-- [x] Real-time Compose UI active line updates driven by `time-pos` property observer.
-- [x] Comprehensive unit test coverage for boundary conditions, comment filtering, and microsecond timestamps.
+- [x] Integration of native `libmpv` with `vo=gpu` and `gpu-context=android`.
+- [x] Automatic fallback to FFmpeg software decoding (`hwdec=auto-safe`) for AVC High 4:2:2 `yuv422p`.
+- [x] Initial embedded `libass` subtitle track loading via `sub-fonts-dir`.
+- [ ] **Fix audio track playback stall**: Resolve audio renderer detachment during continuous video playback.
+- [ ] **Fix mid-stream subtitle disappearance**: Ensure `ActiveSubtitleResolver` maintains track rendering across long video durations.
+- [ ] **Direct dialogue editing binding**: Connect editor text input directly to the active timeline line state.
+- [ ] **Timeline scrub lock**: Synchronize waveform drag scrubbing with frame-accurate video seeking without sample distortion.
 
 ---
 
-## Milestone 4: Waveform Timing
-**Status**: Completed
+## Milestone 3: Visual Typesetting & Interactive Gizmos
+**Status**: Planned
 
-- [x] Continuous center-playhead audio canvas with distinct active dialogue, other dialogue, and muted gap colors.
-- [x] Power-efficient PCM downsampling to 50 buckets per second using `Dispatchers.IO`.
-- [x] Locked time-bucket sampling index preventing waveform distortion and shimmering during horizontal scrub.
-- [x] Responsive touch handles for Lead-In and Lead-Out timing boundaries with keyframe snapping.
-- [x] Zero-state flat timeline rendering with placeholder prompt when media files are not yet loaded.
-
----
-
-## Milestone 5: Release Packaging
-**Status**: Completed
-
-- [x] Native library packaging across all target ABIs: `arm64-v8a`, `armeabi-v7a`, `x86`, and `x86_64`.
-- [x] Bundled standard Crunchyroll typography fonts extracted to application storage on initialization.
-- [x] Verified unit test suite execution with zero failures via `testDebugUnitTest`.
-- [x] Verified debug application package assembly via `assembleDebug`.
+- [ ] Smooth 60 FPS touch dragging for `\pos` coordinate tags using normalized `PlayResX` and `PlayResY` scaling.
+- [ ] Interactive dual-handle controls for `\move` animations with nearest-handle touch detection.
+- [ ] Intelligent tag injection preventing syntax corruption, parameter splitting, and illegal nested curly brackets `{}`.
+- [ ] Visual slider gizmo for Z-axis subtitle rotation (`\frz`).
+- [ ] Bounded snapshot undo buffer (`SnapshotUndoStack`) ensuring O(1) memory overhead during continuous dragging.
 
 ---
 
-## Future Enhancements
-- [ ] Direct cloud storage provider integration through Storage Access Framework.
-- [ ] Waveform visual color customizer in user settings.
-- [ ] Audio spectrum analyzer mode alongside amplitude timeline.
+## Milestone 4: Preferences, Diagnostics & Internationalization
+**Status**: Planned
+
+- [ ] **Media engine switch**: In-app preference to toggle between `libmpv` (accurate ASS styling & 4:2:2 support) and `ExoPlayer` (battery efficient for standard MP4).
+- [ ] **Hardware codec diagnostic screen**: Hardware decoder detection for AVC 4:2:2 profiles with automated fallback suggestions.
+- [ ] **Safe rolling autosave**: Maximum 3 rotating recovery files (`.autosave.1.ass`) avoiding storage bloat.
+- [ ] **Cache manager**: One-tap cache cleaner for downsampled PCM waveform binaries and temporary sessions.
+- [ ] **Per-app language switching**: Locale manager supporting System Default, Bahasa Indonesia, and English.
+
+---
+
+## Milestone 5: Subtitle Grid View & Navigation
+**Status**: Planned
+
+- [ ] Full-screen scrollable Subtitle Grid mode (`LazyColumn`) with custom row filtering (Dialogue vs Comment).
+- [ ] Instant row selection jumping video playhead directly to line start timestamp.
+- [ ] Batch operations: time shifting, line deletion, and bulk style reassignment.
+
+---
+
+## Milestone 6: Distribution & APK Optimization
+**Status**: Planned
+
+- [ ] Gradle ABI split configuration (`arm64-v8a`, `armeabi-v7a`, `x86`, `x86_64`).
+- [ ] Package size reduction targeting ~45 MB for standard `arm64-v8a` release builds.
+- [ ] Production proguard/R8 optimization for release binaries.
+- [ ] First public Alpha release on GitHub Releases.
