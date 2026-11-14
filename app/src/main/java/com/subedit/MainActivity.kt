@@ -30,14 +30,12 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
         setContent {
             SubEditTheme {
-                // State Awal Bersih (First Install): Daftar riwayat proyek awal kosong []
                 val projects = remember {
                     mutableStateListOf<AssProjectItem>().apply {
                         addAll(AssProjectItem.defaultProjects())
@@ -51,7 +49,6 @@ class MainActivity : ComponentActivity() {
                 var formatErrorMessage by remember { mutableStateOf<String?>(null) }
                 var pendingAssExportContent by remember { mutableStateOf("") }
 
-                // 1. File Picker Subtitle (.ass & .srt, pembacaan stream & parsing sepenuhnya di Dispatchers.IO)
                 val subtitlePickerLauncher = rememberLauncherForActivityResult(
                     contract = ActivityResultContracts.OpenDocument(),
                 ) { uri: Uri? ->
@@ -76,7 +73,6 @@ class MainActivity : ComponentActivity() {
                             val parsedDoc = SubtitleParser.parseSubtitleContent(fileName, rawContent)
 
                             withContext(Dispatchers.Main) {
-                                // Reset selectedEventId = null, reset undo history, dan replace penuh daftar styles & events
                                 ProjectSessionManager.applyImportedDocument(parsedDoc)
                                 val currentProj = activeProject ?: AssProjectItem.createZeroStateProject()
                                 val updatedProj = currentProj.copy(
@@ -104,7 +100,6 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                // 2. File Picker Video (.mp4, .webm, .mkv)
                 val videoPickerLauncher = rememberLauncherForActivityResult(
                     contract = ActivityResultContracts.OpenDocument(),
                 ) { uri: Uri? ->
@@ -113,7 +108,6 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                // 3. File Picker Audio (.mp3, .wav, .m4a, .aac, .flac)
                 val audioPickerLauncher = rememberLauncherForActivityResult(
                     contract = ActivityResultContracts.OpenDocument(),
                 ) { uri: Uri? ->
@@ -122,7 +116,6 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                // 4. File Picker Keyframes (.txt / .log) di Dispatchers.IO
                 val keyframePickerLauncher = rememberLauncherForActivityResult(
                     contract = ActivityResultContracts.OpenDocument(),
                 ) { uri: Uri? ->
@@ -154,7 +147,6 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                // 5. File Saver Export .ASS di Dispatchers.IO
                 val exportAssLauncher = rememberLauncherForActivityResult(
                     contract = ActivityResultContracts.CreateDocument("text/plain"),
                 ) { targetUri: Uri? ->
@@ -190,7 +182,6 @@ class MainActivity : ComponentActivity() {
                             activeProject = clickedProject
                         },
                         onCreateNewProject = { newZeroStateProject ->
-                            // Buka editor dengan Zero-State bersih; proyek baru masuk riwayat setelah disimpan
                             selectedVideoUri = null
                             selectedAudioUri = null
                             subtitleImportVersion = 0
@@ -227,7 +218,6 @@ class MainActivity : ComponentActivity() {
                             keyframePickerLauncher.launch(arrayOf("text/plain", "*/*"))
                         },
                         onSaveAssFile = { scriptInfo, styles, events ->
-                            // Proyek baru muncul di riwayat Beranda setelah dibuat dan disimpan oleh pengguna
                             val updatedItem = currentProject.copy(
                                 title = scriptInfo.title,
                                 lineCount = events.size,

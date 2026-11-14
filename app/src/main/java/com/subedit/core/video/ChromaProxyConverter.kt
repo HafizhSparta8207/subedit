@@ -21,27 +21,12 @@ import java.nio.ByteBuffer
 import kotlin.coroutines.coroutineContext
 import kotlin.math.max
 
-/**
- * Detektor dan Konverter Chroma-Only (`yuv422p` -> `yuv420p`) untuk video produksi (seperti AVC High 4:2:2).
- *
- * Prinsip Utama:
- * 1. **Cache Pintar (`cacheDir/chroma_proxy/`)**:
- *    Menggunakan identitas ukuran (`size`) + `lastModified` berkas asli sehingga video 4:2:2 yang sudah
- *    pernah dikonversi langsung dimuat dalam `< 1 detik`.
- * 2. **Zero Pergeseran Frame & Durasi**:
- *    - **Resolusi Asli 100%**: Mempertahankan `width` dan `height` asli tanpa scaling.
- *    - **Exact Frame & PTS 1:1**: Menyalin laju frame (`fps`) dan timestamp tiap frame (`PTS`) persis
- *      sama dengan sumber tanpa drop/duplikasi frame, dengan keyframe interval rapat (`1 detik`).
- *    - **Audio Passthrough (Stream Copy)**: Menyalin paket trek audio secara mentah tanpa re-encoding
- *      agar gelombang audio dan milidetik dialog identik 100%.
- */
 object ChromaProxyConverter {
-
     private const val TAG = "ChromaProxyConverter"
     private const val PROXY_DIR_NAME = "chroma_proxy"
     private const val CODEC_TIMEOUT_US = 10_000L
-    private const val AVC_PROFILE_HIGH_422 = 122 // 0x7A (ITU-T H.264 High 4:2:2 Profile)
-    private const val AVC_PROFILE_HIGH_444 = 244 // 0xF4 (ITU-T H.264 High 4:4:4 Predictive)
+    private const val AVC_PROFILE_HIGH_422 = 122
+    private const val AVC_PROFILE_HIGH_444 = 244
 
     data class VideoStreamInspection(
         val isYuv422: Boolean,
@@ -58,14 +43,9 @@ object ChromaProxyConverter {
         val lastModifiedMs: Long,
     )
 
-    /**
-     * Memeriksa apakah byte header SPS H.264 (`csd-0`) memiliki `profile_idc == 122` (AVC High 4:2:2 / `yuv422p`).
-     * Mendukung format Annex-B (`00 00 00 01 67 <profile_idc>`, `00 00 01 67 <profile_idc>`) maupun AVCC (`01 <profile_idc>`).
-     */
     fun isAvcHigh422Sps(csd0Bytes: ByteArray): Boolean {
         if (csd0Bytes.size < 4) return false
 
-        // Format AVCC (configurationVersion == 1, diikuti AVCProfileIndication)
         if (csd0Bytes[0].toInt() == 1) {
             val profileIdc = csd0Bytes[1].toInt() and 0xFF
             if (profileIdc == AVC_PROFILE_HIGH_422 || profileIdc == AVC_PROFILE_HIGH_444) {
@@ -73,7 +53,6 @@ object ChromaProxyConverter {
             }
         }
 
-        // Format Annex-B start code: cari NAL unit SPS ((nalHeader & 0x1F) == 7)
         var i = 0
         val limit = csd0Bytes.size - 2
         while (i < limit) {
@@ -85,7 +64,7 @@ object ChromaProxyConverter {
                 }
                 if (nalIndex in 0 until (csd0Bytes.size - 1)) {
                     val nalUnitType = csd0Bytes[nalIndex].toInt() and 0x1F
-                    if (nalUnitType == 7) { // SPS NAL unit
+                    if (nalUnitType == 7) {
                         val profileIdc = csd0Bytes[nalIndex + 1].toInt() and 0xFF
                         if (profileIdc == AVC_PROFILE_HIGH_422 || profileIdc == AVC_PROFILE_HIGH_444) {
                             return true
@@ -100,10 +79,6 @@ object ChromaProxyConverter {
         return false
     }
 
-    /**
-     * Menurunkan (downsample) bidang warna (chroma) dari planar `YUV422P` (I422) ke `NV12` (`YUV420SP`)
-     * dengan tetap menyalin bidang kecerahan (luma Y) 100% identik (1:1 resolusi penuh).
-     */
     fun downsampleYuv422PlanarToNv12(
         srcYuv422: ByteArray,
         dstNv12: ByteArray,
@@ -115,10 +90,8 @@ object ChromaProxyConverter {
         val halfHeight = height / 2
         if (srcYuv422.size < frameSize * 2 || dstNv12.size < frameSize + (frameSize / 2)) return
 
-        // 1. Salin bidang Y (Luma) secara utuh 1:1 tanpa modifikasi
         System.arraycopy(srcYuv422, 0, dstNv12, 0, frameSize)
 
-        // 2. Rata-ratakan 2 baris vertikal U dan V (4:2:2 -> 4:2:0) ke dalam susunan UV interleaved (NV12)
         val uOffset = frameSize
         val vOffset = frameSize + (halfWidth * height)
         var dstUvIndex = frameSize
@@ -138,21 +111,11 @@ object ChromaProxyConverter {
         }
     }
 
-    /**
-     * Membangun file target cache di `cacheDir/chroma_proxy/` berdasarkan ukuran + `lastModified` file asli.
-     */
     fun buildProxyCacheFile(cacheDir: File, sizeBytes: Long, lastModifiedMs: Long): File {
         val proxyDir = File(cacheDir, PROXY_DIR_NAME).apply { mkdirs() }
         return File(proxyDir, "chroma420_${sizeBytes}_${lastModifiedMs}.mp4")
     }
 
-    /**
-     * Memeriksa format piksel video dan melakukan auto-konversi `yuv422p` -> `yuv420p` bila diperlukan:
-     * - Jika video sudah `4:2:0`, langsung mengembalikan path/descriptor asli tanpa konversi.
-     * - Jika video adalah `4:2:2` dan sudah ada di `cacheDir/chroma_proxy/`, langsung mengembalikan path cache (`< 1 detik`).
-     * - Jika belum ada di cache, menjalankan konversi chroma-only (`yuv422p` -> `yuv420p`) dengan hardware encoder H.264
-     *   dan melaporkan persentase progres (0%–100%) ke [onConversionProgress].
-     */
     suspend fun resolveOrConvertVideoIfNeeded(
         context: Context,
         videoUri: Uri,
@@ -170,7 +133,6 @@ object ChromaProxyConverter {
             lastModifiedMs = identity.lastModifiedMs,
         )
 
-        // Jika sudah ada di cacheDir/chroma_proxy/, langsung muat dalam < 1 detik tanpa konversi ulang
         if (proxyFile.exists() && proxyFile.length() > 1024L) {
             return@withContext proxyFile.absolutePath
         }
@@ -375,7 +337,6 @@ object ChromaProxyConverter {
                 max(6_000_000, width * height * 4)
             }
 
-            // Konfigurasi Hardware Encoder H.264 (yuv420p, resolusi asli 100%, keyframe interval 1 detik)
             val outputVideoFormat = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
                 setInteger(
                     MediaFormat.KEY_COLOR_FORMAT,
@@ -383,7 +344,7 @@ object ChromaProxyConverter {
                 )
                 setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
                 setInteger(MediaFormat.KEY_FRAME_RATE, frameRate)
-                setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1) // Keyframe interval 1 detik agar scrubbing instan
+                setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
             }
 
             encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC).apply {
@@ -391,7 +352,6 @@ object ChromaProxyConverter {
                 start()
             }
 
-            // Pilih dekoder yang mendukung stream input (prioritaskan software codec untuk 4:2:2)
             val codecList = MediaCodecList(MediaCodecList.ALL_CODECS)
             val matchingDecoderName = codecList.codecInfos
                 .filter { !it.isEncoder && it.supportedTypes.any { t -> t.equals(inputMime, ignoreCase = true) } }
@@ -410,7 +370,6 @@ object ChromaProxyConverter {
 
             muxer = MediaMuxer(tempFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
 
-            // Siapkan Audio Passthrough (stream copy tanpa re-encoding)
             var muxerAudioTrack = -1
             val audioTrackIndex = inspection.audioTrackIndex
             if (audioTrackIndex != null) {
@@ -447,7 +406,6 @@ object ChromaProxyConverter {
                                 )
                                 inputDone = true
                             } else {
-                                // Salin PTS 1:1 persis dari sumber tanpa drop/duplikasi frame
                                 val ptsUs = extractor.sampleTime.coerceAtLeast(0L)
                                 val flags = extractor.sampleFlags
                                 decoder.queueInputBuffer(inIdx, 0, sampleSize, ptsUs, flags)
@@ -555,7 +513,6 @@ object ChromaProxyConverter {
                 }
             }
 
-            // Salin paket audio secara mentah (Audio Passthrough / Stream Copy) tanpa re-encoding
             if (muxerStarted && audioTrackIndex != null && muxerAudioTrack >= 0) {
                 extractor.unselectTrack(inspection.videoTrackIndex)
                 extractor.selectTrack(audioTrackIndex)

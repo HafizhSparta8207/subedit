@@ -145,9 +145,6 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 
-/**
- * Snapshot state untuk mendukung fitur Undo (`[↶]`) dan Redo (`[↷]`).
- */
 private data class EditorHistorySnapshot(
     val scriptInfo: AssScriptInfo,
     val styles: List<AssStyle>,
@@ -155,9 +152,6 @@ private data class EditorHistorySnapshot(
     val activeEventId: Int?,
 )
 
-/**
- * Layar Studio Editor (`EditorScreen.kt`) sesuai blueprint `editor.html`.
- */
 @Composable
 fun EditorScreen(
     project: AssProjectItem,
@@ -177,7 +171,6 @@ fun EditorScreen(
 ) {
     val context = LocalContext.current
 
-    // State Skrip, Styles, Dialogues, dan Keyframes
     var scriptInfo by remember(project.id) { mutableStateOf(project.scriptInfo) }
     val styles = remember(project.id) {
         mutableStateListOf<AssStyle>().apply {
@@ -191,15 +184,12 @@ fun EditorScreen(
         mutableStateListOf<Long>().apply { addAll(project.keyframesUs) }
     }
 
-    // Jika proyek memiliki dialog saat awal dibuka, pilih baris pertama; saat impor baru di-reset ke null
     var activeEventId by remember(project.id) {
         mutableStateOf<Int?>(project.events.firstOrNull()?.id)
     }
 
-    // Observasi state sesi tunggal ProjectSessionManager di memori
     val sessionState by ProjectSessionManager.sessionState.collectAsState()
 
-    // Native libmpv Core View (vo=gpu, gpu-context=android, hwdec=auto-safe, native libass)
     val mpvView = remember(context) {
         SubEditMpvView(context).apply {
             layoutParams = ViewGroup.LayoutParams(
@@ -209,9 +199,6 @@ fun EditorScreen(
         }
     }
 
-    // Fungsi pembantu sinkronisasi skrip .ass langsung ke core native libass:
-    // - Guard status libmpv: Jangan pernah mengirim perintah native jika belum ada media aktif (isMediaLoaded == false).
-    // - Tetap menulis header [Script Info], [V4+ Styles], dan [Events] meskipun daftar events kosong (setelah hapus baris terakhir).
     fun syncSubtitleWithMpv(forceFreshReAdd: Boolean = false) {
         if (videoUri == null || !mpvView.isMediaLoaded || !sessionState.isMediaLoaded) return
         runCatching {
@@ -229,7 +216,6 @@ fun EditorScreen(
         }
     }
 
-    // Inisialisasi sesi awal proyek
     LaunchedEffect(project.id) {
         ProjectSessionManager.initializeSession(
             project = project,
@@ -238,7 +224,6 @@ fun EditorScreen(
         )
     }
 
-    // Undo / Redo History terintegrasi dengan ProjectSessionManager
     fun pushUndoSnapshot() {
         ProjectSessionManager.pushUndoSnapshot()
     }
@@ -265,7 +250,6 @@ fun EditorScreen(
         syncSubtitleWithMpv()
     }
 
-    // Kalkulasi efisien dengan derivedStateOf untuk mencegah recomposition loops
     val activeEventIndex by remember {
         derivedStateOf {
             val id = activeEventId ?: return@derivedStateOf -1
@@ -279,13 +263,11 @@ fun EditorScreen(
         }
     }
 
-    // State Playhead & Playback
     var currentPlayheadUs by remember(project.id) {
         mutableLongStateOf(project.events.firstOrNull()?.startUs ?: 0L)
     }
     var isPlaying by remember { mutableStateOf(false) }
 
-    // Baris dialog yang terlihat di Monitor Video pada posisi currentPlayheadUs (Libass Standard)
     val visibleVideoDialogue by remember {
         derivedStateOf {
             val currentActive = activeEvent
@@ -297,7 +279,6 @@ fun EditorScreen(
         }
     }
 
-    // TextFieldValue untuk kolom teks dialog. Saat activeEvent == null (unselected), dikosongkan.
     var textFieldValue by remember {
         mutableStateOf(
             TextFieldValue(
@@ -322,9 +303,6 @@ fun EditorScreen(
         }
     }
 
-    // Sinkronisasi saat berkas .ass / .srt baru diimpor dari penyimpanan:
-    // - Reset selectedEventId = null, reset riwayat undo, dan replace penuh daftar styles & events
-    // - Jika video sudah dimuat (isMediaLoaded == true), tulis & flush .ass lalu panggil sub-remove -> sub-add -> sub-visibility=yes
     LaunchedEffect(subtitleImportVersion) {
         if (subtitleImportVersion > 0) {
             isPlaying = false
@@ -349,7 +327,6 @@ fun EditorScreen(
         }
     }
 
-    // Audio Waveform: diekstrak secara bertahap di Dispatchers.IO tanpa menahan overlay loading video libmpv
     var waveformData by remember { mutableStateOf<WaveformData?>(null) }
     LaunchedEffect(audioUri, videoUri) {
         val targetMediaUri = audioUri ?: videoUri
@@ -400,7 +377,6 @@ fun EditorScreen(
             }
 
             override fun onMediaLoaded() {
-                // Tutup overlay loading segera setelah libmpv merender frame video perdana
                 ProjectSessionManager.setMediaLoaded(true)
                 ProjectSessionManager.setMediaLoading(isLoading = false, progress = 100, stageMessage = "")
                 syncSubtitleWithMpv(forceFreshReAdd = true)
@@ -448,7 +424,6 @@ fun EditorScreen(
         }
     }
 
-    // Debounce 150ms untuk memicu sub-reload ketika contentRevision berubah (hanya jika isMediaLoaded == true)
     LaunchedEffect(sessionState.contentRevision, videoUri, sessionState.isMediaLoaded) {
         if (videoUri != null && sessionState.isMediaLoaded && mpvView.isMediaLoaded && sessionState.contentRevision > 0L) {
             delay(150L)
@@ -456,9 +431,6 @@ fun EditorScreen(
         }
     }
 
-    // Polling waktu aktual mpvView.timePos setiap 16ms (~60 FPS) selama isPlaying == true.
-    // Saat isMediaLoaded == false (tanpa video/audio), pergerakan playhead berjalan murni di memori Kotlin
-    // menggunakan durasi virtual dari waktu end maksimum daftar event.
     LaunchedEffect(isPlaying, sessionState.isMediaLoaded, videoUri, audioUri) {
         val hasLoadedNativeMedia = sessionState.isMediaLoaded && mpvView.isMediaLoaded && (videoUri != null || audioUri != null)
         if (hasLoadedNativeMedia) {
@@ -529,22 +501,19 @@ fun EditorScreen(
         }
     }
 
-    // State UI Mode & Modals
-    var isLineTableMode by remember { mutableStateOf(false) } // Toggle Mode Audio vs Mode Line
+    var isLineTableMode by remember { mutableStateOf(false) }
     var activeTypesetTool by remember { mutableStateOf(VisualTypesetTool.STANDARD) }
     var showStyleManagerModal by remember { mutableStateOf(false) }
     var showPropertiesModal by remember { mutableStateOf(false) }
     var showHelpModal by remember { mutableStateOf(false) }
     var activeColorSelectorTag by remember { mutableStateOf<String?>(null) }
 
-    // Reset otomatis mode gizmo visual kembali ke Select / Pointer setiap kali selectedEventId == null
     LaunchedEffect(activeEventId) {
         if (activeEventId == null && activeTypesetTool != VisualTypesetTool.STANDARD) {
             activeTypesetTool = VisualTypesetTool.STANDARD
         }
     }
 
-    // Mutasi Baris Dialog (Terhubung langsung ke ProjectSessionManager; sub-reload dipicu via debounce 150ms atau langsung)
     fun updateActiveDialogue(
         recordUndo: Boolean = false,
         syncMpv: Boolean = false,
@@ -580,7 +549,6 @@ fun EditorScreen(
         )
         events.clear()
         events.addAll(ProjectSessionManager.getCurrentScript().events)
-        // Auto-select baris baru agar inspektor langsung menampilkan LINE #X, START, END, dan durasi
         activeEventId = newLine.id
         textFieldValue = TextFieldValue(
             text = newLine.rawText,
@@ -600,14 +568,9 @@ fun EditorScreen(
             activeTypesetTool = VisualTypesetTool.STANDARD
             textFieldValue = TextFieldValue(text = "", selection = TextRange.Zero)
         }
-        // Tulis ulang file sementara .ass secara utuh (termasuk saat daftar Dialogue kosong), flush(), dan panggil sub-reload
         syncSubtitleWithMpv()
     }
 
-    /**
-     * Menyisipkan karakter ganti baris `\N` pada posisi kursor (khusus tombol Enter).
-     * Dilarang digunakan untuk tag formatting atau warna.
-     */
     fun insertNewlineTokenAtCursor() {
         val token = "\\N"
         if (activeEventId == null) {
@@ -626,10 +589,6 @@ fun EditorScreen(
         updateActiveDialogue(recordUndo = true) { it.copy(rawText = updatedText) }
     }
 
-    /**
-     * Toggle tag format `B` (`\b1`/`\b0`), `I` (`\i1`/`\i0`), `U` (`\u1`/`\u0`), atau `S` (`\s1`/`\s0`)
-     * ke dalam satu blok `{...}` tunggal di awal dialog tanpa menyisipkan di posisi kursor teks.
-     */
     fun toggleFormatTagOnActiveDialogue(tagKey: String) {
         val cleanKey = tagKey.trim().removePrefix("{").removeSuffix("}").removePrefix("\\").take(1).lowercase()
         if (activeEventId == null) {
@@ -658,10 +617,6 @@ fun EditorScreen(
         }
     }
 
-    /**
-     * Menimpa tag warna (`\c`, `\2c`, `\3c`, `\4c` beserta alpha) ke dalam satu blok `{...}` tunggal
-     * di awal dialog tanpa menyisipkan di posisi kursor teks.
-     */
     fun applyColorTagToActiveDialogue(formattedAssTag: String) {
         if (activeEventId == null) {
             val initialText = DialogueTokenizer.applyColorOverrideTag("", formattedAssTag)
@@ -691,7 +646,6 @@ fun EditorScreen(
         val isLandscape = maxWidth > maxHeight && maxWidth >= 600.dp
 
         Column(modifier = Modifier.fillMaxSize()) {
-            // A. TOP TOOLBAR ([← Back], [↶ Undo], [↷ Redo], [➕ Open Media], [💾 Save .ASS], [? Help])
             EditorTopToolbar(
                 canUndo = sessionState.canUndo,
                 canRedo = sessionState.canRedo,
@@ -706,16 +660,12 @@ fun EditorScreen(
             )
 
             if (isLandscape) {
-                // =========================================================================
-                // TATA LETAK STUDIO LANSKAP (TABLET / HORIZONTAL)
-                // =========================================================================
                 Column(modifier = Modifier.weight(1f)) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .weight(0.58f),
                     ) {
-                        // Kiri: Monitor Video 16:9 + Baris 7 Tombol Aksi Cepat
                         Column(
                             modifier = Modifier
                                 .weight(0.46f)
@@ -820,7 +770,6 @@ fun EditorScreen(
                             )
                         }
 
-                        // Kanan: Inspector Teks & Metadata ASS
                         AssInspectorPanel(
                             activeEvent = activeEvent,
                             styles = styles,
@@ -869,7 +818,6 @@ fun EditorScreen(
                         )
                     }
 
-                    // Bawah: Audio Waveform Timeline / Line Grid
                     TimelineOrLineGridSection(
                         isLineTableMode = isLineTableMode,
                         waveformData = waveformData,
@@ -899,11 +847,7 @@ fun EditorScreen(
                     )
                 }
             } else {
-                // =========================================================================
-                // TATA LETAK STUDIO POTRET (SMARTPHONE / PORTRAIT)
-                // =========================================================================
                 Column(modifier = Modifier.weight(1f)) {
-                    // B. Monitor Video 16:9
                     VideoMonitor16by9(
                         mpvView = mpvView,
                         hasVideoUri = videoUri != null,
@@ -929,7 +873,6 @@ fun EditorScreen(
                             .aspectRatio(16f / 9f),
                     )
 
-                    // C. Baris 7 Tombol Aksi Cepat
                     QuickActionBar7Buttons(
                         hasActiveLine = activeEvent != null,
                         isPlaying = isPlaying,
@@ -997,7 +940,6 @@ fun EditorScreen(
                         },
                     )
 
-                    // D. Inspector Teks & Metadata ASS
                     AssInspectorPanel(
                         activeEvent = activeEvent,
                         styles = styles,
@@ -1043,7 +985,6 @@ fun EditorScreen(
                         modifier = Modifier.fillMaxWidth(),
                     )
 
-                    // E. Audio Waveform Timeline (~140dp-155dp proporsional mengisi sisa layar)
                     TimelineOrLineGridSection(
                         isLineTableMode = isLineTableMode,
                         waveformData = waveformData,
@@ -1075,12 +1016,10 @@ fun EditorScreen(
                 }
             }
 
-            // F. Toolbar Typesetting Visual (Di Bawah Canvas, 6 Tombol Tanpa KF)
             VisualTypesettingBottomBar(
                 activeTool = activeTypesetTool,
                 onSelectTool = { tool ->
                     activeTypesetTool = tool
-                    // Jika memilih tool visual saat playhead berada di luar baris aktif, lompat ke awal baris aktif
                     val ev = activeEvent
                     if (tool != VisualTypesetTool.STANDARD && ev != null) {
                         if (currentPlayheadUs !in ev.startUs..ev.endUs) {
@@ -1092,9 +1031,6 @@ fun EditorScreen(
         }
     }
 
-    // =========================================================================
-    // FLOATING CARD MODALS (Color Selector, Style Manager, Properties, Help, Format Error)
-    // =========================================================================
     val colorSelectorTag = activeColorSelectorTag
     if (colorSelectorTag != null) {
         val currentStyle = styles.find { it.name == activeEvent?.style } ?: styles.firstOrNull() ?: AssStyle()
@@ -1175,12 +1111,6 @@ fun EditorScreen(
     }
 }
 
-/**
- * Intersepsi tombol Enter pada keyboard virtual Android:
- * Saat pengguna menekan Enter di keyboard virtual (yang menyisipkan karakter `\n`),
- * cegah newline biasa dan otomatis sisipkan tag `\N` pada posisi kursor,
- * lalu majukan kursor 2 langkah ke depan (`cursor + 2`).
- */
 private fun handleTextFieldChangeWithEnterIntercept(
     oldValue: TextFieldValue,
     newValue: TextFieldValue,
@@ -1201,9 +1131,6 @@ private fun handleTextFieldChangeWithEnterIntercept(
     }
 }
 
-/**
- * A. Top Toolbar: `[← Back]`, `[↶ Undo]`, `[↷ Redo]`, `[➕ Open Media]`, `[💾 Save .ASS]`, `[? Help]`.
- */
 @Composable
 private fun EditorTopToolbar(
     canUndo: Boolean,
@@ -1228,7 +1155,6 @@ private fun EditorTopToolbar(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // Kiri: [← Back], [↶ Undo], [↷ Redo]
         Row(
             horizontalArrangement = Arrangement.spacedBy(5.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -1249,7 +1175,6 @@ private fun EditorTopToolbar(
             )
         }
 
-        // Kanan: [➕ Open Media], [💾 Save .ASS], [? Help]
         Row(
             horizontalArrangement = Arrangement.spacedBy(5.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -1362,11 +1287,6 @@ private fun MediaDropdownRow(
     )
 }
 
-/**
- * B. Monitor Video 16:9 (`libmpv` Core) + Rendering Native Libass (100% Aegisub Parity)
- * + Latar Pola Checkerboard Abu-Abu Transparan saat belum ada media video (`!hasVideoUri`)
- * + Visual Typesetting Gizmo.
- */
 @Composable
 private fun VideoMonitor16by9(
     mpvView: SubEditMpvView,
@@ -1400,7 +1320,6 @@ private fun VideoMonitor16by9(
         }
     }
 
-    // Live interactive transform state during drag (60 FPS local UI state, stable references)
     var isGizmoDragging by remember { mutableStateOf(false) }
     var livePosX by remember { mutableFloatStateOf(baseTransform.posX) }
     var livePosY by remember { mutableFloatStateOf(baseTransform.posY) }
@@ -1425,16 +1344,12 @@ private fun VideoMonitor16by9(
     var previewBoxWidthPx by remember { mutableIntStateOf(0) }
     var previewBoxHeightPx by remember { mutableIntStateOf(0) }
 
-    // Pastikan sub-visibility selalu dikembalikan ke yes jika composable keluar saat sedang drag
     DisposableEffect(mpvView) {
         onDispose {
             mpvView.setSubtitleVisibility(true)
         }
     }
 
-    // Watchdog pengaman pada VideoMonitor16by9:
-    // Jika timePos > 0 atau estimated-vf-fps > 0 (atau maksimal 2,5 detik setelah file-loaded),
-    // otomatis ubah isMediaLoading = false dan segarkan siklus render SurfaceView.
     LaunchedEffect(hasVideoUri, isMediaLoading) {
         if (!hasVideoUri || !isMediaLoading) return@LaunchedEffect
         var fileLoadedTimestampMs = 0L
@@ -1515,7 +1430,6 @@ private fun VideoMonitor16by9(
                         liveFscy = startScaleY
                         hasDragged = false
 
-                        // Tahap 1 (onDragStart): Sembunyikan track libass sementara & tampilkan gizmo pratinjau Compose
                         isGizmoDragging = true
                         mpvView.setSubtitleVisibility(false)
                     },
@@ -1533,7 +1447,6 @@ private fun VideoMonitor16by9(
                         val playResX = latestScriptInfo.playResX.toFloat().coerceAtLeast(1f)
                         val playResY = latestScriptInfo.playResY.toFloat().coerceAtLeast(1f)
 
-                        // Tahap 2 (onDrag): Perbarui hanya variabel state UI lokal di memori secara proporsional (60 FPS)
                         when (latestTool) {
                             VisualTypesetTool.POS -> {
                                 livePosX = (startX + dragDeltaX * (playResX / monitorWidth)).coerceIn(0f, playResX)
@@ -1559,8 +1472,6 @@ private fun VideoMonitor16by9(
                         }
                     },
                     onDragEnd = {
-                        // Tahap 3 (onDragEnd): Simpan nilai akhir satu kali ke ProjectSessionManager (1 riwayat Undo),
-                        // tulis & flush() file sementara .ass ke disk, panggil sub-reload, dan kembalikan sub-visibility=yes
                         if (hasDragged) {
                             val updates = when (latestTool) {
                                 VisualTypesetTool.POS -> mapOf(
@@ -1614,7 +1525,6 @@ private fun VideoMonitor16by9(
                 modifier = Modifier.fillMaxSize(),
             )
 
-            // Indikator loading bertahap (0%-100%) ditahan hingga libmpv merender frame perdana ke GPU
             if (isMediaLoading) {
                 val clampedPct = loadingProgress.coerceIn(0, 100)
                 val statusLabel = loadingStageMessage.ifBlank {
@@ -1664,7 +1574,6 @@ private fun VideoMonitor16by9(
                 }
             }
         } else {
-            // Latar pola checkerboard abu-abu transparan (indikator belum ada media video)
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -1687,7 +1596,6 @@ private fun VideoMonitor16by9(
                         }
                     },
             ) {
-                // Indikator resolusi skrip di pojok kanan atas saat belum ada video
                 Box(
                     modifier = Modifier
                         .align(Alignment.TopEnd)
@@ -1707,7 +1615,6 @@ private fun VideoMonitor16by9(
             }
         }
 
-        // Indikator Mode & Koordinat Live di Pojok Kiri Atas Video Monitor (Sembunyikan saat selectedEventId / visibleDialogue == null)
         if (activeTypesetTool != VisualTypesetTool.STANDARD && visibleDialogue != null) {
             val pillText = when (activeTypesetTool) {
                 VisualTypesetTool.POS -> "✥ POS: (${livePosX.roundToInt()}, ${livePosY.roundToInt()})"
@@ -1735,10 +1642,6 @@ private fun VideoMonitor16by9(
             }
         }
 
-        // Rendering Teks Pratinjau Compose (Anti-Ghosting):
-        // Sembunyikan overlay teks Compose sepenuhnya saat pengguna TIDAK sedang menyeret gizmo (`isGizmoDragging`).
-        // Selama proses drag (`isGizmoDragging == true`), track libass disembunyikan (`sub-visibility=no`)
-        // dan overlay pratinjau Compose ditampilkan pada 60 FPS dengan skala PlayResX & jangkar \an1-9.
         if (visibleDialogue != null && !visibleDialogue.isComment && isGizmoDragging) {
             val formattedText = remember(visibleDialogue.rawText) {
                 DialogueTokenizer.formatForVideoDisplay(visibleDialogue.rawText)
@@ -1778,14 +1681,12 @@ private fun VideoMonitor16by9(
                     TextDecoration.combine(decorations)
                 }
 
-                // Skala ukuran font dan kotak gizmo berdasarkan faktor monitorWidth / playResX
                 val scaleFactor = boxWidthPx / scriptInfo.playResX.toFloat().coerceAtLeast(1f)
                 val density = LocalDensity.current
                 val scaledFontSp = with(density) {
                     (resolvedStyle.fontsize * scaleFactor).coerceIn(9f, 52f).toSp()
                 }
 
-                // Titik jangkar perataan numpad \an 1 sampai 9 (default \an2)
                 val alignmentAn = baseTransform.alignment.coerceIn(1, 9)
                 val anchorFracX = when (alignmentAn) {
                     1, 4, 7 -> 0f
@@ -1858,7 +1759,6 @@ private fun VideoMonitor16by9(
                     val textAlpha = 0.9f
                     val scaledOutlineWidth = (resolvedStyle.outline * scaleFactor * 2f).coerceAtLeast(2f)
 
-                    // Layer 1: Outline hitam pekat (Libass Standard)
                     Text(
                         text = formattedText,
                         style = TextStyle(
@@ -1873,7 +1773,6 @@ private fun VideoMonitor16by9(
                         ),
                     )
 
-                    // Layer 2: Fill Primary + Shadow
                     Text(
                         text = formattedText,
                         style = TextStyle(
@@ -1898,16 +1797,6 @@ private fun VideoMonitor16by9(
     }
 }
 
-/**
- * C. Baris 7 Tombol Aksi Cepat (Quick Action Bar):
- * 1. Tombol 1 (Dinamis): `🗑️` (Hapus Line) jika ada baris aktif, `➕` (Tambah Line warna biru langit) jika tidak ada.
- * 2. Tombol 2 `[⇤]`: Shift Lead-In (dinonaktifkan sementara saat tidak ada baris dipilih).
- * 3. Tombol 3 `[⇦]`: Nudge Audio/Playhead Mundur 50ms (dinonaktifkan sementara saat tidak ada baris dipilih).
- * 4. Tombol 4 `[▶ / ⏸]`: Play / Pause playback.
- * 5. Tombol 5 `[⇨]`: Nudge Audio/Playhead Maju 50ms (dinonaktifkan sementara saat tidak ada baris dipilih).
- * 6. Tombol 6 `[⇥]`: Shift Lead-Out (dinonaktifkan sementara saat tidak ada baris dipilih).
- * 7. Tombol 7 `[⋮]`: Menu Opsi Lanjutan Subtitler (termasuk `🟣 Load Keyframes`).
- */
 @Composable
 private fun QuickActionBar7Buttons(
     hasActiveLine: Boolean,
@@ -1936,7 +1825,6 @@ private fun QuickActionBar7Buttons(
         horizontalArrangement = Arrangement.spacedBy(4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // 1. Tombol Dinamis (🗑️ Hapus Line vs ➕ Tambah Line Biru Langit)
         QuickBarBtn(
             label = if (hasActiveLine) "🗑️" else "➕",
             bgColor = if (hasActiveLine) AccentCoral.copy(alpha = 0.2f) else Color(0xFF0284C7),
@@ -1946,7 +1834,6 @@ private fun QuickActionBar7Buttons(
             modifier = Modifier.weight(1f),
         )
 
-        // 2. [⇤] Shift Lead-In
         QuickBarBtn(
             label = "⇤",
             enabled = hasActiveLine,
@@ -1954,7 +1841,6 @@ private fun QuickActionBar7Buttons(
             modifier = Modifier.weight(1f),
         )
 
-        // 3. [⇦] Nudge Audio/Playhead Mundur (-50ms / 1 frame)
         QuickBarBtn(
             label = "⇦",
             enabled = hasActiveLine,
@@ -1962,7 +1848,6 @@ private fun QuickActionBar7Buttons(
             modifier = Modifier.weight(1f),
         )
 
-        // 4. [▶ / ⏸] Play / Pause
         QuickBarBtn(
             label = if (isPlaying) "⏸" else "▶",
             bgColor = AccentCyan,
@@ -1972,7 +1857,6 @@ private fun QuickActionBar7Buttons(
             modifier = Modifier.weight(1f),
         )
 
-        // 5. [⇨] Nudge Audio/Playhead Maju (+50ms / 1 frame)
         QuickBarBtn(
             label = "⇨",
             enabled = hasActiveLine,
@@ -1980,7 +1864,6 @@ private fun QuickActionBar7Buttons(
             modifier = Modifier.weight(1f),
         )
 
-        // 6. [⇥] Shift Lead-Out
         QuickBarBtn(
             label = "⇥",
             enabled = hasActiveLine,
@@ -1988,7 +1871,6 @@ private fun QuickActionBar7Buttons(
             modifier = Modifier.weight(1f),
         )
 
-        // 7. [⋮] Menu Opsi Lanjutan Subtitler
         Box(modifier = Modifier.weight(1f)) {
             QuickBarBtn(
                 label = "⋮",
@@ -2115,15 +1997,6 @@ private fun QuickBarBtn(
     }
 }
 
-/**
- * D. Inspector Teks & Metadata ASS:
- * - Strip Timecode: `#Line`, `START`, `END`, dan durasi.
- * - Strip Metadata: Checkbox `Comment`, Dropdown `Style` (diikuti separator dan `⚙️ Edit Style...`),
- *   kolom `Actor`, `Effect`, dan counter karakter murni (tanpa kata `"char"`, hijau <= 42, merah >= 43).
- * - Toolbar Chip Tag ASS Cepat (Rata Tengah): `B`, `I`, `U`, `S`, `\c`, `\2c`, `\3c`, `\4c`
- *   (tombol warna membuka Floating Modal `ColorSelectorDialog`).
- * - Kolom Teks Dialog (~110dp) dengan intersepsi tombol Enter -> `\N`.
- */
 @Composable
 private fun AssInspectorPanel(
     activeEvent: AssDialogueEvent?,
@@ -2149,7 +2022,6 @@ private fun AssInspectorPanel(
             .padding(horizontal = 8.dp, vertical = 5.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        // 1. Strip Timecode (#Line, START, END, Durasi)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -2196,7 +2068,6 @@ private fun AssInspectorPanel(
             )
         }
 
-        // 2. Strip Metadata (Comment, Style Dropdown + ⚙️ Edit Style..., Actor, Effect, CPL Counter)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -2204,7 +2075,6 @@ private fun AssInspectorPanel(
             horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // Checkbox Comment
             Row(
                 modifier = Modifier
                     .fillMaxHeight()
@@ -2236,7 +2106,6 @@ private fun AssInspectorPanel(
                 )
             }
 
-            // Dropdown Style + Separator + ⚙️ Edit Style...
             Box(modifier = Modifier.weight(1.25f)) {
                 val currentStyleName = activeEvent?.style ?: (styles.firstOrNull()?.name ?: "Default")
                 Row(
@@ -2304,7 +2173,6 @@ private fun AssInspectorPanel(
                 }
             }
 
-            // Actor Input
             CompactMetaInput(
                 value = activeEvent?.actor.orEmpty(),
                 onValueChange = onActorChanged,
@@ -2312,7 +2180,6 @@ private fun AssInspectorPanel(
                 modifier = Modifier.weight(0.8f),
             )
 
-            // Effect Input
             CompactMetaInput(
                 value = activeEvent?.effect.orEmpty(),
                 onValueChange = onEffectChanged,
@@ -2320,7 +2187,6 @@ private fun AssInspectorPanel(
                 modifier = Modifier.weight(0.8f),
             )
 
-            // Counter Karakter Real-Time (Tanpa kata "char", Hijau <= maxSafeCpl, Merah >= maxSafeCpl + 1)
             val charCount = remember(textFieldValue.text) {
                 DialogueTokenizer.countCleanCharacters(textFieldValue.text)
             }
@@ -2351,7 +2217,6 @@ private fun AssInspectorPanel(
             }
         }
 
-        // 3. Toolbar Chip Tag ASS Cepat (Rata Tengah): B, I, U, S (Toggle 1/0), \c, \2c, \3c, \4c
         val headTagMap = remember(textFieldValue.text) {
             DialogueTokenizer.parseHeadTagMap(textFieldValue.text)
         }
@@ -2395,7 +2260,6 @@ private fun AssInspectorPanel(
             AssTagChip("\\4c", ChipShadowColor) { onColorTagChipClicked("\\4c") }
         }
 
-        // 4. Kolom Teks Dialog (~110dp) OutlinedTextField terikat dua arah dengan event aktif di ProjectSessionManager
         OutlinedTextField(
             value = textFieldValue,
             onValueChange = onTextFieldValueChange,
@@ -2497,9 +2361,6 @@ private fun AssTagChip(
     }
 }
 
-/**
- * E. Panel Audio Waveform Timeline (Continuous Center-Playhead Canvas) atau Mode Line Grid.
- */
 @Composable
 private fun TimelineOrLineGridSection(
     isLineTableMode: Boolean,
@@ -2517,7 +2378,6 @@ private fun TimelineOrLineGridSection(
     Column(
         modifier = modifier.background(BgTimeline),
     ) {
-        // Timeline Control Strip
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -2571,7 +2431,6 @@ private fun TimelineOrLineGridSection(
                     )
                 }
             } else {
-                // Mode Line (Grid daftar baris dialog ala Aegisub desktop)
                 LazyColumn(modifier = Modifier.fillMaxSize()) {
                     itemsIndexed(
                         items = events,
@@ -2631,7 +2490,6 @@ private fun TimelineOrLineGridSection(
                 }
             }
         } else {
-            // Mode Audio: Continuous Center-Playhead Canvas
             CenterPlayheadWaveformCanvas(
                 waveformData = waveformData,
                 events = events,
@@ -2648,11 +2506,6 @@ private fun TimelineOrLineGridSection(
     }
 }
 
-/**
- * F. Toolbar Typesetting Visual (Di Bawah Canvas):
- * Pointer Mode, Position `\pos`, Rotate Z `\frz`, Rotate X/Y, Scale `\fscx/\fscy`, dan Clip `\clip`
- * (6 tombol; impor Keyframes telah dipindahkan sepenuhnya ke menu `[⋮]`).
- */
 @Composable
 private fun VisualTypesettingBottomBar(
     activeTool: VisualTypesetTool,

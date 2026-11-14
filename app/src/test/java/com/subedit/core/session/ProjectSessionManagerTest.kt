@@ -9,7 +9,6 @@ import org.junit.Before
 import org.junit.Test
 
 class ProjectSessionManagerTest {
-
     @Before
     fun setup() {
         ProjectSessionManager.clearSession()
@@ -45,13 +44,11 @@ class ProjectSessionManagerTest {
         assertEquals(101, state.activeEventId)
         assertEquals(1_000_000L, state.playheadUs)
 
-        // Update playhead to second line
         val activeLine = ProjectSessionManager.updatePlayhead(4_000_000L)
         assertNotNull(activeLine)
         assertEquals(102, activeLine?.id)
         assertEquals(102, ProjectSessionManager.sessionState.value.activeEventId)
 
-        // Update playhead to empty region
         val emptyLine = ProjectSessionManager.updatePlayhead(7_000_000L)
         assertNull(emptyLine)
     }
@@ -103,7 +100,6 @@ class ProjectSessionManagerTest {
         ProjectSessionManager.setMediaLoading(false)
         assertEquals(false, ProjectSessionManager.sessionState.value.isMediaLoading)
 
-        // Pergerakan playhead tidak boleh mengubah contentRevision (agar sub-reload tidak dipanggil saat seek)
         ProjectSessionManager.updatePlayhead(2_500_000L)
         assertEquals(initialRevision, ProjectSessionManager.sessionState.value.contentRevision)
     }
@@ -122,7 +118,6 @@ class ProjectSessionManagerTest {
         )
         ProjectSessionManager.initializeSession(project)
 
-        // Simpan snapshot undo lalu perbarui teks dialog aktif
         ProjectSessionManager.updateActiveDialogueText("Teks Baru Diedit", recordUndo = true)
         val afterEdit = ProjectSessionManager.sessionState.value
         assertEquals("Teks Baru Diedit", afterEdit.script.events.first().rawText)
@@ -130,7 +125,6 @@ class ProjectSessionManagerTest {
         assertEquals(false, afterEdit.canRedo)
         val revAfterEdit = afterEdit.contentRevision
 
-        // Undo harus mengembalikan teks sebelumnya dan menaikkan contentRevision untuk memicu sub-reload
         val undone = ProjectSessionManager.undo()
         assertNotNull(undone)
         val afterUndo = ProjectSessionManager.sessionState.value
@@ -139,7 +133,6 @@ class ProjectSessionManagerTest {
         assertEquals(true, afterUndo.canRedo)
         assertEquals(revAfterEdit + 1L, afterUndo.contentRevision)
 
-        // Redo harus menerapkan kembali perubahan dan menaikkan contentRevision untuk memicu sub-reload
         val redone = ProjectSessionManager.redo()
         assertNotNull(redone)
         val afterRedo = ProjectSessionManager.sessionState.value

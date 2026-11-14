@@ -14,7 +14,6 @@ data class KaraokeSegment(
 )
 
 object KaraokeEngine {
-
     private val karaokeTagRegex = Regex("""\{\\k[fo]?\s*(\d+)\}""", RegexOption.IGNORE_CASE)
     private val vowels = setOf('a', 'i', 'u', 'e', 'o', 'A', 'I', 'U', 'E', 'O')
 

@@ -62,11 +62,6 @@ private val WRAP_STYLE_LABELS = mapOf(
     3 to "3: Smart wrapping (bawah lebih lebar)",
 )
 
-/**
- * Dialog `Script Properties` (`[Script Info]`) dengan desain Floating Card gelap:
- * Mengatur `Title`, `Script Resolution` (`PlayResX` x `PlayResY`), `Layout Resolution` (`LayoutResX` x `LayoutResY`),
- * `YCbCr Matrix`, dan `WrapStyle`.
- */
 @Composable
 fun PropertiesDialog(
     initialScriptInfo: AssScriptInfo,
@@ -95,7 +90,6 @@ fun PropertiesDialog(
                 .background(BgPanel)
                 .border(1.dp, BorderHighlight, RoundedCornerShape(14.dp)),
         ) {
-            // Header
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -136,13 +130,11 @@ fun PropertiesDialog(
                     .padding(14.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                // Title
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("TITLE SKRIP", color = TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                     PropTextField(value = title, onValueChange = { title = it })
                 }
 
-                // Script Resolution Preset Dropdown
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(
                         "SCRIPT RESOLUTION PRESET",
@@ -204,7 +196,6 @@ fun PropertiesDialog(
                     }
                 }
 
-                // PlayResX & PlayResY
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -227,7 +218,6 @@ fun PropertiesDialog(
                     }
                 }
 
-                // Layout Resolution Dropdown
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("LAYOUT RESOLUTION", color = TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                     val matchedLayout = LAYOUT_RESOLUTION_PRESETS.firstOrNull {
@@ -282,7 +272,6 @@ fun PropertiesDialog(
                     }
                 }
 
-                // YCbCr Matrix Dropdown
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("YCBCR MATRIX", color = TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                     Box {
@@ -330,7 +319,6 @@ fun PropertiesDialog(
                     }
                 }
 
-                // WrapStyle
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("WRAP STYLE", color = TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                     Box {
@@ -381,7 +369,6 @@ fun PropertiesDialog(
 
             HorizontalDivider(color = BorderColor)
 
-            // Footer
             Row(
                 modifier = Modifier
                     .fillMaxWidth()

@@ -1,12 +1,6 @@
 package com.subedit.core.domain
 
-/**
- * Parser dan Serializer penuh untuk file subtitle `.ass` (SubStation Alpha v4+) dan `.srt` (SubRip)
- * dengan dukungan penuh round-trip Aegisub Desktop (23 kolom `[V4+ Styles]`, `[Aegisub Project Garbage]`,
- * `[Aegisub Extradata]`, `[Fonts]`, `[Graphics]`, dan baris `Comment:`).
- */
 object SubtitleParser {
-
     private val KNOWN_SCRIPT_INFO_PREFIXES = listOf(
         "title:",
         "scripttype:",
@@ -26,20 +20,12 @@ object SubtitleParser {
         val preservedSections: Map<String, List<String>> = scriptInfo.preservedSections,
     )
 
-    /**
-     * Memeriksa apakah nama file memiliki ekstensi yang didukung (`.ass` atau `.srt`).
-     */
     fun isSupportedSubtitleFileName(fileName: String?): Boolean {
         if (fileName.isNullOrBlank()) return false
         val lower = fileName.trim().lowercase()
         return lower.endsWith(".ass") || lower.endsWith(".srt")
     }
 
-    /**
-     * Menormalisasi teks mentah berkas subtitle secara aman:
-     * - Menghapus UTF-8 BOM (`\uFEFF`)
-     * - Menghapus karakter kontrol `\r` (`replace("\r", "")`) dari line-ending Windows
-     */
     fun normalizeRawSubtitleText(rawContent: String): String {
         if (rawContent.isEmpty()) return ""
         return rawContent
@@ -48,9 +34,6 @@ object SubtitleParser {
             .replace("\r", "")
     }
 
-    /**
-     * Mem-parsing isi file `.ass` atau `.srt` menjadi [ParsedSubtitleDocument].
-     */
     fun parseSubtitleContent(fileName: String, content: String): ParsedSubtitleDocument {
         val normalized = normalizeRawSubtitleText(content)
         val isSrt = fileName.trim().lowercase().endsWith(".srt") ||
@@ -85,7 +68,6 @@ object SubtitleParser {
             val trimmed = rawLine.trim()
             if (trimmed.isEmpty()) return@forEach
 
-            // Deteksi pergantian section [Section Name]
             if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
                 currentSectionHeader = trimmed
                 currentSectionLower = trimmed.lowercase()
@@ -99,7 +81,6 @@ object SubtitleParser {
                 return@forEach
             }
 
-            // Simpan utuh section metadata Aegisub Desktop ([Aegisub Project Garbage], [Aegisub Extradata], [Fonts], [Graphics], dll.)
             if (currentSectionLower.isNotEmpty() &&
                 currentSectionLower != "[script info]" &&
                 currentSectionLower != "[v4+ styles]" &&
@@ -201,7 +182,6 @@ object SubtitleParser {
             }
         }
 
-        // Pertahankan 100% seluruh style asli dari [V4+ Styles]; hanya gunakan Default jika [V4+ Styles] benar-benar kosong
         val finalStyles = if (parsedStyles.isEmpty()) {
             AssStyle.defaultSingleStyle()
         } else {
@@ -234,7 +214,6 @@ object SubtitleParser {
         val isComment = line.startsWith("Comment:", ignoreCase = true)
         val body = line.substringAfter(':').trimStart()
         val parts = body.split(',', limit = 10)
-        // Validasi 10 kolom standar ASS v4+: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         if (parts.size < 10) return null
 
         val layerPart = parts[0].trim()
@@ -242,7 +221,6 @@ object SubtitleParser {
         val startUs = SubTime.parseAssOrNull(parts[1].trim()) ?: return null
         val parsedEndUs = SubTime.parseAssOrNull(parts[2].trim()) ?: return null
         val validEndUs = if (parsedEndUs >= startUs) parsedEndUs else startUs
-        // Pertahankan 100% nama style asli (misal DefaultCR, DefaultCR Italics, DefaultCR Tops)
         val rawStyleName = parts[3].trim().removePrefix("*").ifEmpty { "Default" }
         val actor = parts[4].trim()
         val marginL = parts[5].trim().toIntOrNull()?.coerceAtLeast(0) ?: 0
@@ -267,9 +245,6 @@ object SubtitleParser {
         )
     }
 
-    /**
-     * Mem-parsing file SubRip (`.srt`) dan mengonversi newline menjadi `\N` ASS.
-     */
     fun parseSrt(srtContent: String): ParsedSubtitleDocument {
         val normalized = normalizeRawSubtitleText(srtContent).trim()
         if (normalized.isEmpty()) {
@@ -332,9 +307,6 @@ object SubtitleParser {
         )
     }
 
-    /**
-     * Mem-parsing seluruh 23 kolom definisi `Style:` di `[V4+ Styles]`.
-     */
     private fun parseAssStyleLine(rawBody: String): AssStyle? {
         val parts = rawBody.split(',').map { it.trim() }
         if (parts.size < 22) return null
@@ -374,9 +346,6 @@ object SubtitleParser {
         return if (value % 1f == 0f) value.toInt().toString() else value.toString()
     }
 
-    /**
-     * Men-serialisasi seluruh 23 kolom `[V4+ Styles]` kembali ke format standar ASS v4+.
-     */
     fun serializeAssStyleLine(s: AssStyle): String {
         val c1 = AssColorConverter.hexToAss(s.primaryColorHex, s.primaryAlphaHex)
         val c2 = AssColorConverter.hexToAss(s.secondaryColorHex, s.secondaryAlphaHex)
@@ -396,11 +365,6 @@ object SubtitleParser {
         return "Style: ${s.name},${s.fontname},$fs,$c1,$c2,$c3,$c4,$b,$i,$u,$st,$scX,$scY,$sp,$ang,${s.borderStyle},$outl,$shad,${s.alignment},${s.marginL},${s.marginR},${s.marginV},${s.encoding}"
     }
 
-    /**
-     * Mengekspor state skrip aktif menjadi isi file `.ass` standar Aegisub Desktop secara utuh
-     * (termasuk `[Script Info]`, `[Aegisub Project Garbage]`, 23 kolom `[V4+ Styles]`,
-     * `[Fonts]`, `[Graphics]`, `[Events]` beserta `Comment:`, dan `[Aegisub Extradata]`).
-     */
     fun exportToAss(
         scriptInfo: AssScriptInfo,
         styles: List<AssStyle>,
@@ -425,7 +389,6 @@ object SubtitleParser {
         }
         appendLine()
 
-        // Tulis [Aegisub Project Garbage] jika ada
         val writtenSections = HashSet<String>()
         for ((header, lines) in preservedSections) {
             if (header.equals("[Aegisub Project Garbage]", ignoreCase = true) && lines.isNotEmpty()) {
@@ -444,7 +407,6 @@ object SubtitleParser {
         }
         appendLine()
 
-        // Tulis [Fonts] dan [Graphics] jika ada sebelum [Events]
         for ((header, lines) in preservedSections) {
             val lower = header.lowercase()
             if ((lower == "[fonts]" || lower == "[graphics]") && lines.isNotEmpty() && writtenSections.add(lower)) {
@@ -471,7 +433,6 @@ object SubtitleParser {
             appendLine(ev.rawText)
         }
 
-        // Tulis [Aegisub Extradata] dan section kustom lainnya di akhir berkas
         for ((header, lines) in preservedSections) {
             val lower = header.lowercase()
             if (lines.isNotEmpty() && writtenSections.add(lower)) {

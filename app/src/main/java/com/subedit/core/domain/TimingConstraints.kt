@@ -1,23 +1,9 @@
 package com.subedit.core.domain
 
-/**
- * Validasi batas waktu dialog untuk mencegah durasi baris bernilai nol, negatif,
- * atau melampaui batas durasi media.
- *
- * Aturan invariants:
- * - `start >= 0`
- * - `end >= start + 10ms` (10_000 mikrodetik)
- * - `end <= durationMs` (bila durasi media diketahui > 0)
- */
 object TimingConstraints {
-
     const val MIN_DURATION_MS: Long = 10L
     const val MIN_DURATION_US: Long = 10_000L
 
-    /**
-     * Memvalidasi batas waktu mulai (Lead-In) dalam satuan milidetik:
-     * memastikan `start >= 0` dan `start <= end - 10ms`.
-     */
     fun clampStartMs(
         proposedStartMs: Long,
         currentEndMs: Long,
@@ -28,10 +14,6 @@ object TimingConstraints {
         return proposedStartMs.coerceIn(0L, maxAllowedStart)
     }
 
-    /**
-     * Memvalidasi batas waktu selesai (Lead-Out) dalam satuan milidetik:
-     * memastikan `end >= start + 10ms` dan `end <= durationMs` (jika `durationMs > 0`).
-     */
     fun clampEndMs(
         currentStartMs: Long,
         proposedEndMs: Long,
@@ -48,10 +30,6 @@ object TimingConstraints {
         }
     }
 
-    /**
-     * Memvalidasi batas waktu mulai (Lead-In) dalam satuan mikrodetik:
-     * memastikan `startUs >= 0` dan `startUs <= endUs - 10_000Us` (10ms).
-     */
     fun clampStartUs(
         proposedStartUs: Long,
         currentEndUs: Long,
@@ -62,10 +40,6 @@ object TimingConstraints {
         return proposedStartUs.coerceIn(0L, maxAllowedStart)
     }
 
-    /**
-     * Memvalidasi batas waktu selesai (Lead-Out) dalam satuan mikrodetik:
-     * memastikan `endUs >= startUs + 10_000Us` (10ms) dan `endUs <= durationUs` (jika `durationUs > 0`).
-     */
     fun clampEndUs(
         currentStartUs: Long,
         proposedEndUs: Long,

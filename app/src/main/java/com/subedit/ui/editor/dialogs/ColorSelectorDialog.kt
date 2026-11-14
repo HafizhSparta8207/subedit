@@ -51,22 +51,9 @@ import com.subedit.ui.theme.TextMain
 import com.subedit.ui.theme.TextMuted
 import kotlin.math.roundToInt
 
-/**
- * Floating Modal Dialog **"Color Selector"** untuk tombol chip tag warna (`\c`, `\2c`, `\3c`, `\4c`).
- *
- * Fitur:
- * - Kotak pratinjau warna aktif (Active Color Preview Box) dengan latar checkerboard transparan.
- * - Pemilih warna visual (Swatches + RGB Sliders).
- * - 3 Kolom Kode Warna Tersinkronisasi:
- *   1. Format ASS: `&HBBGGRR&` (Blue-Green-Red).
- *   2. Format Hex/HTML: `#RRGGBB`.
- *   3. Format Alpha (Transparansi): Hex `&HAA&` dan slider nilai `0 - 255`.
- * - Tombol `Batal` dan `Terapkan Warna`: menyisipkan tag warna (`{\c&HBBGGRR&}`, `{\2c&HBBGGRR&}`,
- *   `{\3c&HBBGGRR&}`, atau `{\4c&HBBGGRR&}` beserta tag alpha jika transparansi > 0).
- */
 @Composable
 fun ColorSelectorDialog(
-    tagType: String, // "\\c", "\\2c", "\\3c", atau "\\4c"
+    tagType: String,
     initialHexColor: String = "#38BDF8",
     onDismiss: () -> Unit,
     onApplyColorTag: (formattedAssTag: String) -> Unit,
@@ -85,7 +72,7 @@ fun ColorSelectorDialog(
     var bChannel by remember(cleanInitial) {
         mutableIntStateOf(cleanInitial.substring(5, 7).toIntOrNull(16) ?: 0xF8)
     }
-    var alphaInt by remember { mutableIntStateOf(0) } // 0 = Opaque (&H00&), 255 = Transparent (&HFF&)
+    var alphaInt by remember { mutableIntStateOf(0) }
 
     var hexInputText by remember(cleanInitial) { mutableStateOf(cleanInitial) }
     var assBgrInputText by remember(cleanInitial) {
@@ -187,7 +174,6 @@ fun ColorSelectorDialog(
                 .background(BgPanel)
                 .border(1.dp, BorderHighlight, RoundedCornerShape(14.dp)),
         ) {
-            // Header
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -226,7 +212,6 @@ fun ColorSelectorDialog(
                 modifier = Modifier.padding(14.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                // 1. Kotak Pratinjau Warna Aktif + Pratinjau Tag ASS
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -283,7 +268,6 @@ fun ColorSelectorDialog(
                     }
                 }
 
-                // 2. Baris Swatch Warna Cepat + Sliders RGB Visual
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(5.dp),
@@ -307,7 +291,6 @@ fun ColorSelectorDialog(
                     }
                 }
 
-                // RGB Sliders Kompak
                 Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     CompactRgbSliderRow(
                         channelLabel = "R",
@@ -329,12 +312,10 @@ fun ColorSelectorDialog(
                     )
                 }
 
-                // 3. Tiga Kolom Kode Warna Tersinkronisasi (ASS &HBBGGRR&, Hex #RRGGBB, Alpha &HAA&)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    // Kolom 1: Format ASS (&HBBGGRR&)
                     Column(
                         modifier = Modifier.weight(1.15f),
                         verticalArrangement = Arrangement.spacedBy(3.dp),
@@ -351,7 +332,6 @@ fun ColorSelectorDialog(
                         )
                     }
 
-                    // Kolom 2: Format Hex/HTML (#RRGGBB)
                     Column(
                         modifier = Modifier.weight(1f),
                         verticalArrangement = Arrangement.spacedBy(3.dp),
@@ -368,7 +348,6 @@ fun ColorSelectorDialog(
                         )
                     }
 
-                    // Kolom 3: Format Alpha (&HAA&)
                     Column(
                         modifier = Modifier.weight(0.85f),
                         verticalArrangement = Arrangement.spacedBy(3.dp),
@@ -386,7 +365,6 @@ fun ColorSelectorDialog(
                     }
                 }
 
-                // Slider Alpha (0 = Opaque .. 255 = Transparent)
                 Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -422,7 +400,6 @@ fun ColorSelectorDialog(
 
             HorizontalDivider(color = BorderColor)
 
-            // Footer: Batal & Terapkan Warna
             Row(
                 modifier = Modifier
                     .fillMaxWidth()

@@ -65,21 +65,6 @@ import com.subedit.ui.theme.BorderHighlight
 import com.subedit.ui.theme.TextMain
 import com.subedit.ui.theme.TextMuted
 
-/**
- * Modal 2: `StyleEditorDialog` (Floating Card Design) sesuai `editor.html` & spesifikasi:
- * - Header: Style Name input.
- * - Font Family: Dropdown memuat 12 font standar Crunchyroll.
- * - Font Size: Input angka.
- * - Checkbox / Toggle Formatting: `Bold`, `Italic`, `Underline`, `Strikeout`.
- * - 4 Palet Warna: `Primary`, `Secondary`, `Outline`, `Shadow` (Hex <-> ASS `&H00BBGGRR`).
- * - Margins: `Left`, `Right`, `Vert`.
- * - `Outline` & `Shadow` thickness: Input angka.
- * - **Alignment Matrix**: Keypad 3x3 numpad (`[7][8][9]`, `[4][5][6]`, `[1][2][3]`) diletakkan
- *   presisi di posisi rata tengah.
- * - **Tanpa Kolom Encoding** (dikunci internal ke `1` / Default UTF-8).
- * - **Live Preview Box**: Kotak pratinjau teks real-time dengan style yang sedang diubah.
- * - Tombol `Batal` dan `Terapkan Style`.
- */
 @Composable
 fun StyleEditorDialog(
     initialStyle: AssStyle,
@@ -136,7 +121,7 @@ fun StyleEditorDialog(
             marginL = (marginLText.toIntOrNull() ?: 60).coerceIn(0, 900),
             marginR = (marginRText.toIntOrNull() ?: 60).coerceIn(0, 900),
             marginV = (marginVText.toIntOrNull() ?: 45).coerceIn(0, 900),
-            encoding = 1, // Terkunci internal ke 1 (UTF-8)
+            encoding = 1,
         )
     }
 
@@ -152,7 +137,6 @@ fun StyleEditorDialog(
                 .background(BgPanel)
                 .border(1.dp, BorderHighlight, RoundedCornerShape(14.dp)),
         ) {
-            // Header
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -188,7 +172,6 @@ fun StyleEditorDialog(
 
             HorizontalDivider(color = BorderColor)
 
-            // Body Scrollable
             Column(
                 modifier = Modifier
                     .weight(1f, fill = false)
@@ -196,7 +179,6 @@ fun StyleEditorDialog(
                     .padding(horizontal = 14.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                // 1. Style Name
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     StyleFieldLabel("STYLE NAME")
                     CompactDialogTextField(
@@ -206,7 +188,6 @@ fun StyleEditorDialog(
                     )
                 }
 
-                // 2. Font Family (Crunchyroll Standard) & Font Size (pt)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -281,7 +262,6 @@ fun StyleEditorDialog(
                     }
                 }
 
-                // 3. Text Formatting Toggles (Bold, Italic, Underline, Strikeout)
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     StyleFieldLabel("TEXT FORMATTING")
                     Row(
@@ -315,7 +295,6 @@ fun StyleEditorDialog(
                     }
                 }
 
-                // 4. 4 Palet Warna (Primary, Secondary, Outline, Shadow)
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     StyleFieldLabel("COLOR PALETTE (HEX ↔ ASS &H00BBGGRR&)")
                     Row(
@@ -349,7 +328,6 @@ fun StyleEditorDialog(
                     }
                 }
 
-                // 5. Margins (Left, Right, Vert)
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     StyleFieldLabel("MARGINS (PX PADA PLAYRES)")
                     Row(
@@ -383,7 +361,6 @@ fun StyleEditorDialog(
                     }
                 }
 
-                // 6. Outline & Shadow Thickness
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -406,8 +383,6 @@ fun StyleEditorDialog(
                     }
                 }
 
-                // 7. Alignment Matrix: Keypad 3x3 Numpad ([7][8][9], [4][5][6], [1][2][3]) Rata Tengah
-                // (Tanpa kolom Encoding; dikunci internal ke 1 / Default UTF-8)
                 Column(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalAlignment = Alignment.CenterHorizontally,
@@ -471,7 +446,6 @@ fun StyleEditorDialog(
                     }
                 }
 
-                // 8. Live Preview Box (Kotak Hitam Checkerboard Real-Time)
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     StyleFieldLabel("LIVE PREVIEW (REAL-TIME STYLE RENDER)")
                     StyleLivePreviewBox(style = previewStyle)
@@ -480,7 +454,6 @@ fun StyleEditorDialog(
 
             HorizontalDivider(color = BorderColor)
 
-            // Footer: Batal & Terapkan Style
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -521,7 +494,6 @@ fun StyleEditorDialog(
         }
     }
 
-    // Sub-dialog Pemilih Warna Cepat + Input Hex
     val slot = activeColorPickerSlot
     if (slot != null) {
         val currentHex = when (slot) {
@@ -569,7 +541,6 @@ private fun StyleLivePreviewBox(
             .clip(RoundedCornerShape(8.dp))
             .background(Color(0xFF05070A))
             .drawBehind {
-                // Gambar pola checkerboard gelap seperti di editor.html
                 val tilePx = 10.dp.toPx()
                 val cols = (size.width / tilePx).toInt() + 1
                 val rows = (size.height / tilePx).toInt() + 1
@@ -595,7 +566,6 @@ private fun StyleLivePreviewBox(
         val fontStyle = if (style.italic) FontStyle.Italic else FontStyle.Normal
         val assetFontFamily = FontRepository.rememberAssFontFamily(style.fontname)
 
-        // Layer 1: Outline Stroke ASS
         if (style.outline > 0f) {
             Text(
                 text = sampleText,
@@ -611,7 +581,6 @@ private fun StyleLivePreviewBox(
             )
         }
 
-        // Layer 2: Fill Primary + Drop Shadow ASS
         Text(
             text = sampleText,
             style = TextStyle(
@@ -801,7 +770,6 @@ private fun ColorPickerModal(
                 placeholder = "#FFFFFF",
             )
 
-            // Grid 4x4 warna cepat
             for (row in presetColors.chunked(4)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),

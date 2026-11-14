@@ -13,9 +13,6 @@ import `is`.xyz.mpv.MPVNode
 import `is`.xyz.mpv.Utils
 import java.io.File
 
-/**
- * Listener callback sinkronisasi event pemutaran libmpv ke layer Jetpack Compose.
- */
 interface MpvPlaybackListener {
     fun onTimePosChanged(timeUs: Long)
     fun onPlaybackStateChanged(isPlaying: Boolean)
@@ -24,20 +21,10 @@ interface MpvPlaybackListener {
     fun onMediaLoaded()
 }
 
-/**
- * Implementasi [BaseMPVView] kustom untuk editor SubEdit:
- * 1. Menangani decoding video AVC High 4:2:2 (YUV422P) dengan GPU context (`vo=gpu`, `gpu-context=android`)
- *    dan otomatis fallback software decoding libavcodec (`hwdec=auto-safe`).
- * 2. Rendering native libass dengan paritas 100% Aegisub desktop (`sub-ass=yes`, `sub-ass-override=no`, `sub-fonts-dir`),
- *    serta mempertahankan `sub-visibility=yes` dan `sid=auto` tetap aktif selama seek.
- * 3. Event observer sinkron di Main thread untuk `time-pos` -> [ProjectSessionManager.updatePlayhead],
- *    status loading media (`isMediaLoading`), dan kontrol scrubbing akurat (`relative+exact`, `absolute+exact`).
- */
 class SubEditMpvView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
 ) : BaseMPVView(context, attrs) {
-
     private val mainHandler = Handler(Looper.getMainLooper())
     private var playbackListener: MpvPlaybackListener? = null
     private var hasSubtitleTrack = false
@@ -76,7 +63,6 @@ class SubEditMpvView @JvmOverloads constructor(
 
     init {
         runCatching {
-            // Salin cert dan subfont bawaan mpv ke internal files directory
             Utils.copyAssets(context)
             MpvMediaHelper.prepareFontsDirectory(context)
 
@@ -95,19 +81,16 @@ class SubEditMpvView @JvmOverloads constructor(
     override fun initOptions() {
         val fontsDir = File(context.filesDir, "fonts")
 
-        // 1. OPSI DEKODING AVC HIGH 4:2:2 (YUV422P) & GPU CONTEXT ANDROID
         mpv.setOptionString("vo", "gpu")
         mpv.setOptionString("gpu-context", "android")
         mpv.setOptionString("hwdec", "auto-safe")
         mpv.setOptionString("hwdec-codecs", "h264,hevc,vp9,av1")
         mpv.setOptionString("vd-lavc-threads", "0")
 
-        // 2. BATAS CACHE MEMORI EKSPLISIT DEMUXER NATIVE LIBMPV (ANTI-OOM VIDEO PANJANG & .ASS VSI)
         mpv.setOptionString("cache", "yes")
         mpv.setOptionString("demuxer-max-bytes", "32MiB")
         mpv.setOptionString("demuxer-max-back-bytes", "16MiB")
 
-        // 3. OPSI AUDIO, KEEP-OPEN & KETAHANAN TRACK SUBTITLE SAAT SEEK
         mpv.setOptionString("ao", "audiotrack,opensles")
         mpv.setOptionString("keep-open", "always")
         mpv.setOptionString("sub-auto", "no")
@@ -115,7 +98,6 @@ class SubEditMpvView @JvmOverloads constructor(
         mpv.setOptionString("sid", "auto")
         mpv.setOptionString("hr-seek", "yes")
 
-        // 4. OPSI RENDERING NATIVE LIBASS (100% PARITAS AEGISUB DESKTOP)
         mpv.setOptionString("sub-ass", "yes")
         mpv.setOptionString("sub-ass-override", "no")
         mpv.setOptionString("sub-scale-with-window", "yes")
@@ -125,7 +107,6 @@ class SubEditMpvView @JvmOverloads constructor(
     }
 
     override fun postInitOptions() {
-        // Default mulai dalam kondisi pause agar tidak langsung berputar tanpa interaksi pengguna
         mpv.setPropertyBoolean("pause", true)
         mpv.setPropertyString("keep-open", "always")
         mpv.setPropertyString("sub-visibility", "yes")
@@ -227,7 +208,6 @@ class SubEditMpvView @JvmOverloads constructor(
                     }
                     "vo-configured" -> {
                         isVoConfigured = value
-                        // Tutup overlay loading segera setelah vo-configured aktif saat media telah dimuat
                         if (value && isMediaLoaded) {
                             markFirstFrameRenderedOnMain()
                         }
@@ -277,12 +257,9 @@ class SubEditMpvView @JvmOverloads constructor(
                         isMediaLoaded = true
                         hasLoadedVideo = true
                         isAwaitingFirstFrame = true
-                        // Kirim seek awal 0 absolute+exact segera setelah file-loaded diterima
-                        // agar GPU langsung menggambar frame pertama ke permukaan SurfaceView
                         runCatching {
                             mpv.command("seek", "0", "absolute+exact")
                         }
-                        // Batas waktu pengaman (watchdog) maksimal 2,5 detik setelah file-loaded
                         mainHandler.removeCallbacks(loadingWatchdogRunnable)
                         mainHandler.postDelayed(loadingWatchdogRunnable, WATCHDOG_TIMEOUT_MS)
                         mainHandler.post {
@@ -322,9 +299,6 @@ class SubEditMpvView @JvmOverloads constructor(
         this.playbackListener = listener
     }
 
-    /**
-     * Mem-polling metrik kesiapan frame (`timePos` dan `estimatedVfFps`) untuk watchdog loading.
-     */
     fun isFirstFrameMetricReady(): Boolean {
         if (!isMpvInitialized || !isMediaLoaded) return false
         val queriedTime = runCatching { mpv.getPropertyDouble("time-pos") }.getOrNull()
@@ -338,10 +312,6 @@ class SubEditMpvView @JvmOverloads constructor(
         return isVoConfigured || timePos > 0.0 || estimatedVfFps > 0.0
     }
 
-    /**
-     * Mem-polling posisi waktu aktual `time-pos` dalam satuan detik untuk loop 60 FPS (`16ms`)
-     * pada `CenterPlayheadWaveformCanvas`.
-     */
     fun pollTimePosSeconds(): Double {
         if (!isMpvInitialized || !isMediaLoaded || !ProjectSessionManager.isMediaLoaded()) return timePos
         val queried = runCatching { mpv.getPropertyDouble("time-pos") }.getOrNull()
@@ -351,11 +321,6 @@ class SubEditMpvView @JvmOverloads constructor(
         return timePos
     }
 
-    /**
-     * Mengatur visibilitas track subtitle libass (`sub-visibility=yes` atau `sub-visibility=no`).
-     * Digunakan oleh gizmo visual typesetting saat siklus `onDragStart` (`no`) dan `onDragEnd` (`yes`)
-     * untuk mencegah ghosting / teks ganda bertumpuk.
-     */
     fun setSubtitleVisibility(visible: Boolean) {
         isSubtitleTemporarilyHidden = !visible
         if (!isMpvInitialized || !isMediaLoaded || !ProjectSessionManager.isMediaLoaded()) return
@@ -364,10 +329,6 @@ class SubEditMpvView @JvmOverloads constructor(
         }
     }
 
-    /**
-     * Memastikan properti `sub-visibility=yes` dan `sid=auto` tetap aktif selama pemutaran dan seek
-     * (kecuali saat disembunyikan sementara oleh drag gizmo).
-     */
     private fun ensureSubtitleTrackVisibility() {
         if (!isMpvInitialized || !isMediaLoaded || isSubtitleTemporarilyHidden) return
         runCatching {
@@ -391,23 +352,15 @@ class SubEditMpvView @JvmOverloads constructor(
                 mpv.setPropertyString("vo", "null")
                 mpv.command("loadfile", pathOrUri)
             }
-            // Jika video dipilih namun SurfaceView belum selesai surfaceCreated,
-            // activeMediaPath sudah tersimpan dan akan langsung dieksekusi pada callback surfaceCreated().
         }.onFailure { err ->
             Log.e(TAG, "Gagal mengirim perintah loadfile ke libmpv: ${err.message}", err)
         }
-        // Paksa bangun siklus render SurfaceView setelah loadfile dikirim
         mainHandler.post {
             requestLayout()
             invalidate()
         }
     }
 
-    /**
-     * Memuat file video atau audio ke dalam pemutar mpv, memaksa bangun siklus render `SurfaceView`
-     * (`requestLayout()` + `invalidate()`), dan menahan indikator `isMediaLoading = true` hingga
-     * frame perdana dirender atau batas waktu pengaman (*watchdog* 2,5 detik setelah `file-loaded`) tercapai.
-     */
     fun loadMedia(pathOrUri: String, isAudioOnly: Boolean = false) {
         if (pathOrUri.isBlank()) return
         activeMediaPath = pathOrUri
@@ -443,10 +396,6 @@ class SubEditMpvView @JvmOverloads constructor(
         ProjectSessionManager.setMediaLoaded(false)
     }
 
-    /**
-     * Memulai pemutaran audio/video via `mpv.setPropertyBoolean("pause", false)`.
-     * Guard penuh: tidak dieksekusi jika `isMediaLoaded == false`.
-     */
     fun play() {
         if (!isMpvInitialized || !isMediaLoaded || !ProjectSessionManager.isMediaLoaded()) return
         ensureSubtitleTrackVisibility()
@@ -454,30 +403,17 @@ class SubEditMpvView @JvmOverloads constructor(
         isPlaying = true
     }
 
-    /**
-     * Menghentikan sementara pemutaran via `mpv.setPropertyBoolean("pause", true)`.
-     * Guard penuh: tidak dieksekusi jika `isMediaLoaded == false`.
-     */
     fun pause() {
         if (!isMpvInitialized || !isMediaLoaded || !ProjectSessionManager.isMediaLoaded()) return
         mpv.setPropertyBoolean("pause", true)
         isPlaying = false
     }
 
-    /**
-     * Toggle play/pause pemutaran.
-     * Guard penuh: tidak dieksekusi jika `isMediaLoaded == false`.
-     */
     fun togglePlay() {
         if (!isMpvInitialized || !isMediaLoaded || !ProjectSessionManager.isMediaLoaded()) return
         if (isPlaying) pause() else play()
     }
 
-    /**
-     * Melompat ke titik waktu detik tertentu secara presisi (`seek <sec> absolute+exact`)
-     * dengan tetap mempertahankan `sub-visibility=yes` dan `sid=auto` tanpa me-remove track subtitle.
-     * Guard penuh: tidak dieksekusi jika `isMediaLoaded == false`.
-     */
     fun seekToSeconds(seconds: Double) {
         if (!isMpvInitialized || !isMediaLoaded || !ProjectSessionManager.isMediaLoaded()) return
         val clampedSec = seconds.coerceAtLeast(0.0)
@@ -486,23 +422,12 @@ class SubEditMpvView @JvmOverloads constructor(
         mpv.command("seek", clampedSec.toString(), "absolute+exact")
     }
 
-    /**
-     * Nudge waktu maju atau mundur dalam detik secara presisi (`seek <deltaSec> relative+exact`)
-     * dengan tetap mempertahankan `keep-open=always` dan `sub-visibility=yes`.
-     * Guard penuh: tidak dieksekusi jika `isMediaLoaded == false`.
-     */
     fun seekRelativeExact(deltaSeconds: Double) {
         if (!isMpvInitialized || !isMediaLoaded || !ProjectSessionManager.isMediaLoaded()) return
         ensureSubtitleTrackVisibility()
         mpv.command("seek", deltaSeconds.toString(), "relative+exact")
     }
 
-    /**
-     * Memuat ulang berkas subtitle baru (saat impor berkas `.ass` / `.srt`) secara aman:
-     * - Guard penuh: Dilarang mengirim perintah native ke `libmpv` jika `isMediaLoaded == false`.
-     * - Mengeksekusi `sub-remove`, `sub-add <tempAssPath> select`, dan `sub-visibility=yes`
-     *   secara berurutan di Main thread.
-     */
     fun reloadFreshSubtitleFile(subFilePath: String) {
         if (subFilePath.isBlank()) return
         activeSubFilePath = subFilePath
@@ -531,12 +456,6 @@ class SubEditMpvView @JvmOverloads constructor(
         }
     }
 
-    /**
-     * Memuat atau me-reload track subtitle ASS langsung ke core libass:
-     * - Guard penuh: Tidak pernah mengirim perintah `sub-add` atau `sub-reload` jika `isMediaLoaded == false`.
-     * - Pertama kali memuat: `sub-add <path> select`
-     * - Update real-time saat `contentRevision` berubah (pengetikan/drag/hapus/undo/redo): `sub-reload`
-     */
     fun loadOrReloadSubtitle(subFilePath: String) {
         if (subFilePath.isBlank()) return
         activeSubFilePath = subFilePath

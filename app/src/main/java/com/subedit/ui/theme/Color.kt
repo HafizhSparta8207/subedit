@@ -2,7 +2,6 @@ package com.subedit.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-// Palet Warna Dark Slate SubEdit (Sesuai Blueprint index.html, editor.html & style.css)
 val BgDarkest = Color(0xFF070A10)
 val BgMain = Color(0xFF0B0F17)
 val BgPanel = Color(0xFF0F141E)
@@ -24,14 +23,12 @@ val AccentCoral = Color(0xFFF43F5E)
 val AccentPurple = Color(0xFFC084FC)
 val AccentAmber = Color(0xFFF59E0B)
 
-// Warna Waveform Multi-Warna (Aegisub Standard)
 val WaveActiveRed = Color(0xFFEF4444)
 val WaveOtherDialogueGreen = Color(0xFF84CC16)
 val WaveMutedGreen = Color(0xFF44682A)
 val WaveGridLine = Color(0xFF222836)
 val WaveCenterLine = Color(0xFF252E3D)
 
-// Warna Chip Tag ASS Cepat (\c, \2c, \3c, \4c)
 val ChipPrimaryColor = Color(0xFF38BDF8)
 val ChipSecondaryColor = Color(0xFF4ADE80)
 val ChipOutlineColor = Color(0xFFF43F5E)

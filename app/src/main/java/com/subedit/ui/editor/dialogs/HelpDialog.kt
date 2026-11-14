@@ -33,9 +33,6 @@ import com.subedit.ui.theme.BorderColor
 import com.subedit.ui.theme.BorderHighlight
 import com.subedit.ui.theme.TextMain
 
-/**
- * Dialog `HelpDialog` (`Panduan Tombol & Fitur`) dengan desain Floating Card gelap sesuai `editor.html`.
- */
 @Composable
 fun HelpDialog(
     onDismiss: () -> Unit,
@@ -126,9 +123,6 @@ fun HelpDialog(
     }
 }
 
-/**
- * Dialog Error ketika pengguna memilih file subtitle selain `.ass` dan `.srt`.
- */
 @Composable
 fun SubtitleFormatErrorDialog(
     message: String = "Format tidak didukung! SubEdit hanya mendukung file .ass dan .srt",

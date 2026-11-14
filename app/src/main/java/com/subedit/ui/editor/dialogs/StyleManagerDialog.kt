@@ -53,15 +53,6 @@ import com.subedit.ui.theme.BorderHighlight
 import com.subedit.ui.theme.TextMain
 import com.subedit.ui.theme.TextMuted
 
-/**
- * Modal 1: `StyleManagerDialog` dengan desain Floating Card berlatar gelap sesuai `editor.html`.
- *
- * Fitur:
- * - Menampilkan daftar seluruh style `[V4+ Styles]` di dalam file subtitle aktif.
- * - Tombol urutkan `▲` / `▼`, tombol `✏️` (Buka `StyleEditorDialog`), dan tombol `❌` (Hapus Style).
- * - Tombol lebar `➕ Add Style` dengan border garis putus-putus di bawah daftar list.
- * - Tombol `Batal` dan `Simpan`.
- */
 @Composable
 fun StyleManagerDialog(
     initialStyles: List<AssStyle>,
@@ -76,7 +67,7 @@ fun StyleManagerDialog(
         mutableStateListOf<String>().apply { addAll(initialStyles.map { it.name }) }
     }
 
-    var editingIndex by remember { mutableIntStateOf(-2) } // -2 = tertutup, -1 = tambah baru, >=0 = edit
+    var editingIndex by remember { mutableIntStateOf(-2) }
     var minimumStyleWarning by remember { mutableStateOf(false) }
 
     Dialog(
@@ -91,7 +82,6 @@ fun StyleManagerDialog(
                 .background(BgPanel)
                 .border(1.dp, BorderHighlight, RoundedCornerShape(14.dp)),
         ) {
-            // Header Floating Card
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -132,7 +122,6 @@ fun StyleManagerDialog(
 
             HorizontalDivider(color = BorderColor)
 
-            // Body: Daftar Style + Tombol Add Style
             Column(
                 modifier = Modifier
                     .weight(1f, fill = false)
@@ -195,7 +184,6 @@ fun StyleManagerDialog(
                     )
                 }
 
-                // Tombol Lebar "➕ Add Style" dengan Dashed Border
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -234,7 +222,6 @@ fun StyleManagerDialog(
 
             HorizontalDivider(color = BorderColor)
 
-            // Footer: Batal & Simpan
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -290,7 +277,6 @@ fun StyleManagerDialog(
         }
     }
 
-    // Jika pengguna menekan "✏️" atau "➕ Add Style", tampilkan StyleEditorDialog di atasnya
     if (editingIndex != -2) {
         val initialTarget = if (editingIndex >= 0 && editingIndex in draftStyles.indices) {
             draftStyles[editingIndex]
@@ -336,7 +322,6 @@ private fun StyleRowItem(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        // Tombol Urutkan Atas / Bawah
         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Box(
                 modifier = Modifier
@@ -360,7 +345,6 @@ private fun StyleRowItem(
             }
         }
 
-        // Info Nama & Ringkasan Style
         Column(
             modifier = Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(2.dp),
@@ -389,7 +373,6 @@ private fun StyleRowItem(
             )
         }
 
-        // Tombol Aksi Kanan: ✏️ (Edit) & ❌ (Hapus)
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Box(
                 modifier = Modifier

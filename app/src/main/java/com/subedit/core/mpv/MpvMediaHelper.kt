@@ -12,21 +12,13 @@ import `is`.xyz.mpv.Utils
 import java.io.File
 import java.io.FileOutputStream
 
-/**
- * Utilitas manajemen media, ekstraksi font lokal, dan sinkronisasi live preview ASS untuk engine libmpv.
- */
 object MpvMediaHelper {
-
     private const val TAG = "SubEditMPV"
     private const val LIVE_PREVIEW_SUB_FILENAME = "subedit_live_preview.ass"
 
     @Volatile
     private var activeMediaPfd: ParcelFileDescriptor? = null
 
-    /**
-     * Mempersiapkan direktori font lokal di internal storage (`filesDir/fonts`)
-     * dan menyalin font standar Crunchyroll dari assets agar dapat diakses langsung oleh native libass.
-     */
     fun prepareFontsDirectory(context: Context): File {
         val fontsDir = File(context.filesDir, "fonts").apply { mkdirs() }
         val assetManager = context.assets
@@ -49,10 +41,6 @@ object MpvMediaHelper {
         return fontsDir
     }
 
-    /**
-     * Membuka [Uri] Android secara langsung menggunakan path riil atau protokol `fd://`
-     * tanpa menyalin ulang file video besar ke cache internal.
-     */
     @Synchronized
     fun resolveUriToPath(context: Context, uri: Uri): String {
         if (uri.scheme == "file") {
@@ -70,7 +58,6 @@ object MpvMediaHelper {
                         return realPath
                     }
                 }
-                // Gunakan file descriptor langsung (fd://) tanpa menyalin file besar ke cache
                 closeActiveFileDescriptor()
                 activeMediaPfd = pfd
                 return "fd://${pfd.fd}"
@@ -88,12 +75,6 @@ object MpvMediaHelper {
         activeMediaPfd = null
     }
 
-    /**
-     * Menulis skrip subtitle ASS terkini ke file cache lokal (`cacheDir/subedit_live_preview.ass`)
-     * dan melakukan sinkronisasi flush ke disk (`fos.flush()` + `fd.sync()`) sebelum perintah
-     * `sub-add` / `sub-reload` dikirimkan ke native libmpv/libass.
-     * Tetap mencetak `[Script Info]`, `[V4+ Styles]`, dan header `[Events]` meskipun daftar `events` kosong.
-     */
     @Synchronized
     fun writeLiveAssPreview(
         context: Context,

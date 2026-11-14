@@ -69,27 +69,6 @@ private enum class TimelineDragMode {
     SCRUB,
 }
 
-/**
- * Audio Waveform Timeline (`Continuous Center-Playhead Canvas`) sesuai `editor.html`.
- *
- * Spesifikasi:
- * - **Center Playhead**: Garis tegak cyan (`#06B6D4`) tepat di tengah layar (50% lebar canvas).
- *   Waveform dan blok dialog bergerak horizontal melintasinya saat play/scrubbing.
- * - **Zero-State / Tanpa Audio (`waveformData == null`)**:
- *   * Tidak menggambar gelombang sintetis jika `waveformData == null`.
- *   * Menggambar garis datar horizontal hening (flat timeline) beserta teks panduan redup:
- *     *"Belum ada audio. Tekan [+] untuk memuat file audio/video."*
- *   * Tetap bisa di-scrubbing secara bebas melewati penggaris waktu detik (time ruler).
- * - **Waveform Multi-Warna (Saat `waveformData != null`)**:
- *   * Merah (`#EF4444`): Gelombang suara pada rentang baris aktif yang sedang diedit.
- *   * Hijau Terang (`#84CC16`): Gelombang suara pada rentang baris dialog lain yang terdaftar.
- *   * Hijau Redup / Muted (`#44682A`): Gelombang suara pada jeda kosong non-dialog.
- *   * Garis Ungu (`#C084FC`): Penanda titik keyframe video.
- * - **Sentuhan & Drag Presisi**:
- *   * Garis batas Lead-In (Cyan) dan Lead-Out (Merah) memiliki target sentuh jari responsif.
- *   * Men-drag area di luar handle melakukan scrubbing timeline.
- *   * Mengetuk blok dialog memilih baris tersebut; mengetuk ruang kosong melepas pilihan (`deselect`).
- */
 @Composable
 fun CenterPlayheadWaveformCanvas(
     waveformData: WaveformData?,
@@ -182,7 +161,6 @@ fun CenterPlayheadWaveformCanvas(
             .fillMaxSize()
             .background(BgTimelineCanvas)
             .pointerInput(pxPerSec) {
-                // Gabungan deteksi ketuk (tap < touchSlop) dan geser (drag >= touchSlop) dalam satu pointer gesture
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
                     val startOffset = down.position
@@ -289,7 +267,6 @@ fun CenterPlayheadWaveformCanvas(
                     }
 
                     if (!isDragging) {
-                        // Ketukan di bawah touchSlop: cari segmen dialog pada waktu tersebut via ActiveSubtitleResolver
                         val deltaSec = (startOffset.x - centerX) / pxPerSec
                         val tappedTimeUs = (latestPlayheadUs + (deltaSec * SubTime.US_PER_SEC).toLong())
                             .coerceAtLeast(0L)
@@ -379,7 +356,6 @@ private fun DrawScope.drawAegisubContinuousTimeline(
     val startVisibleSec = max(0f, playheadSec - halfSpanSec)
     val endVisibleSec = playheadSec + halfSpanSec
 
-    // Viewport Culling: Filter hanya segmen subtitle yang masuk dalam rentang waktu layar saat ini
     val visibleStartUs = (max(0f, startVisibleSec - 0.5f) * SubTime.US_PER_SEC).toLong()
     val visibleEndUs = ((endVisibleSec + 0.5f) * SubTime.US_PER_SEC).toLong()
     val visibleStartMs = visibleStartUs / 1_000L
@@ -390,7 +366,6 @@ private fun DrawScope.drawAegisubContinuousTimeline(
         eventEndMs >= visibleStartMs && eventStartMs <= visibleEndMs
     }
 
-    // 1. Grid Vertikal per Detik (Time Ruler) & Garis Tengah Horizontal
     val firstTickSec = floor(startVisibleSec).toInt()
     val lastTickSec = (endVisibleSec + 1f).toInt()
     for (sec in firstTickSec..lastTickSec) {
@@ -418,7 +393,6 @@ private fun DrawScope.drawAegisubContinuousTimeline(
         }
     }
 
-    // Garis tengah horizontal (flat timeline)
     drawLine(
         color = if (waveformData == null) Color(0xFF334155) else WaveCenterLine,
         start = Offset(0f, midY),
@@ -426,11 +400,8 @@ private fun DrawScope.drawAegisubContinuousTimeline(
         strokeWidth = if (waveformData == null) 1.5.dp.toPx() else 1f,
     )
 
-    // 2. Waveform Multi-Warna Kontinu (HANYA jika waveformData != null)
-    // Kunci posisi sampling amplitudo audio pada indeks bucket waktu absolut (timestampSec * 50)
-    // agar bentuk gelombang tetap statis dan tidak bergeser saat kanvas digulir.
     if (waveformData != null && waveformData.peaks.isNotEmpty()) {
-        val sampleRate = 50 // 50 bucket/detik (timestampSec * 50)
+        val sampleRate = 50
         val bucketStepPx = pxPerSec / sampleRate.toFloat()
         val stride = max(1, (1.8f / bucketStepPx).toInt())
         val effectiveBarWidth = max(1.5f, (bucketStepPx * stride * 0.78f).coerceAtLeast(barWidthPx))
@@ -466,7 +437,6 @@ private fun DrawScope.drawAegisubContinuousTimeline(
             bucketIdx += stride
         }
     } else {
-        // Tanpa audio: Gambar overlay tipis blok dialog di sekitar garis datar & teks panduan redup (hanya visibleEvents)
         for (ev in visibleEvents) {
             val startSec = ev.startUs.toFloat() / SubTime.US_PER_SEC.toFloat()
             val endSec = ev.endUs.toFloat() / SubTime.US_PER_SEC.toFloat()
@@ -499,7 +469,6 @@ private fun DrawScope.drawAegisubContinuousTimeline(
         )
     }
 
-    // 3. Garis Vertikal Keyframe Ungu (#C084FC)
     if (keyframesUs.isNotEmpty()) {
         for (kfUs in keyframesUs) {
             if (kfUs < visibleStartUs) continue
@@ -520,7 +489,6 @@ private fun DrawScope.drawAegisubContinuousTimeline(
         }
     }
 
-    // 4. Overlay Blok Dialog (Viewport Culled), Teks Preview dengan clipRect, Lead-In (Cyan) & Lead-Out (Merah)
     val maxCanvasWidthConstraint = w.toInt().coerceIn(1, 8192)
     for (ev in visibleEvents) {
         val startSec = ev.startUs.toFloat() / SubTime.US_PER_SEC.toFloat()
@@ -561,7 +529,6 @@ private fun DrawScope.drawAegisubContinuousTimeline(
                         )
                     }
 
-                    // Label Nomor Line & Durasi (#31 (2.00s)) ikut terbungkus clipRect segmen
                     if (clipRight - textLeftX > 44f) {
                         val safeMetaWidth = (clipRight - textLeftX).toInt().coerceIn(1, maxCanvasWidthConstraint)
                         val measuredMeta = textMeasurer.measure(
@@ -581,7 +548,6 @@ private fun DrawScope.drawAegisubContinuousTimeline(
             }
         }
 
-        // Garis Pembatas Lead-In (Cyan #22D3EE)
         if (startX in -16f..(w + 16f)) {
             drawLine(
                 color = AccentLeadInCyan,
@@ -605,7 +571,6 @@ private fun DrawScope.drawAegisubContinuousTimeline(
             }
         }
 
-        // Garis Pembatas Lead-Out (Merah #F43F5E untuk aktif, Hijau #22C55E untuk non-aktif)
         if (endX in -16f..(w + 16f)) {
             val endColor = if (isActive) AccentCoral else AccentGreen
             drawLine(
@@ -631,7 +596,6 @@ private fun DrawScope.drawAegisubContinuousTimeline(
         }
     }
 
-    // 5. Center Playhead Line & Arrow (Tegak Cyan di 50% Lebar Canvas)
     drawLine(
         color = AccentPlayheadCyan,
         start = Offset(centerX, 0f),

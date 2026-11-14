@@ -19,10 +19,6 @@ import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sin
 
-/**
- * Buffer amplitudo audio yang telah di-downsample ke 50 bucket/detik (`FloatArray`)
- * dan di-cache di memori agar CPU tidak membedah file suara berulang kali saat scrolling.
- */
 @Immutable
 data class WaveformData(
     val peaks: FloatArray,
@@ -30,11 +26,6 @@ data class WaveformData(
     val durationUs: Long,
     val sourceLabel: String = "DEMO",
 ) {
-    /**
-     * Mengambil nilai amplitudo `[0.04f..1.0f]` pada titik waktu mikrodetik tertentu secara O(1).
-     * Di luar bucket atau pada jeda kosong tetap mengembalikan baseline minimal agar gelombang
-     * hijau redup (*muted*) tetap terlihat sepanjang durasi file seperti pada Aegisub.
-     */
     fun peakAt(timeUs: Long): Float {
         if (peaks.isEmpty() || timeUs < 0L || timeUs > durationUs) return 0.04f
         val index = ((timeUs * sampleRateHz) / SubTime.US_PER_SEC).toInt()
@@ -42,25 +33,18 @@ data class WaveformData(
     }
 
     companion object {
-        const val DEFAULT_BUCKETS_PER_SEC: Int = 50 // 50 bucket per detik (1 bucket = 20ms)
+        const val DEFAULT_BUCKETS_PER_SEC: Int = 50
     }
 }
 
-/**
- * Engine ekstraktor waveform hemat daya (**Thermal-Efficient**) menggunakan downsampling PCM
- * 50 bucket/detik dan in-memory LRU cache berbasis URI.
- */
 object ThermalAudioWaveformExtractor {
-
     private const val TIMEOUT_US: Long = 10_000L
     private const val SAMPLE_STRIDE: Int = 4
     private const val YIELD_INTERVAL_BUFFERS: Int = 32
-    private const val PARTIAL_EMIT_INTERVAL_BUCKETS: Int = 750 // ~15 detik pada 50Hz
+    private const val PARTIAL_EMIT_INTERVAL_BUCKETS: Int = 750
 
-    // Dispatcher IO khusus dengan batas paralelisme rendah agar tidak berebut I/O dengan demuxer libmpv
     private val backgroundExtractorDispatcher = Dispatchers.IO.limitedParallelism(1)
 
-    // In-memory cache agar file audio/video yang sudah diekstrak tidak pernah didecode ulang
     private val memoryCache = ConcurrentHashMap<String, WaveformData>()
 
     suspend fun extractFromUri(
@@ -77,7 +61,6 @@ object ThermalAudioWaveformExtractor {
             return@withContext Result.success(cached)
         }
 
-        // Beri ruang inisialisasi awal bagi demuxer audio/video libmpv sebelum ekstraksi PCM dimulai
         yield()
 
         runCatching {
@@ -238,10 +221,6 @@ object ThermalAudioWaveformExtractor {
         }
     }
 
-    /**
-     * Menghasilkan waveform demo kontinu (identik dengan pola `getAmplitudeAtTime` di `editor.html`)
-     * dan menyimpannya di memori agar 0% beban komputasi saat scrubbing.
-     */
     fun generateDemoWaveform(
         durationUs: Long = 60L * SubTime.US_PER_SEC,
         bucketsPerSecond: Int = WaveformData.DEFAULT_BUCKETS_PER_SEC,

@@ -51,16 +51,6 @@ import com.subedit.ui.theme.BorderHighlight
 import com.subedit.ui.theme.TextMain
 import com.subedit.ui.theme.TextMuted
 
-/**
- * Floating Modal Card "New Project Properties" (Inisialisasi Add Project).
- *
- * Spesifikasi:
- * - Input Project Name: Placeholder / default `Project_Subtitle_[N]` (otomatis menghitung urutan proyek).
- * - Script Resolution (`PlayResX x PlayResY`): Dropdown 12 resolusi standar (Default: `1920x1080 (FHD)`).
- * - Layout Resolution: Default `0x0`, dengan opsi dropdown resolusi yang sama.
- * - YCbCr Matrix: Dropdown pilihan (`None` [Default], `TV.601`, `PC.601`, `TV.709 (Recommended)`, dll.).
- * - Tombol `Batal` dan `OK` (membuka editor dalam kondisi Zero-State bersih).
- */
 @Composable
 fun NewProjectDialog(
     nextProjectIndex: Int,
@@ -70,7 +60,6 @@ fun NewProjectDialog(
     val defaultName = remember(nextProjectIndex) { "Project_Subtitle_$nextProjectIndex" }
     var projectName by remember(defaultName) { mutableStateOf(defaultName) }
 
-    // Default Script Resolution = 1920x1080 (FHD) -> index 8
     val defaultScriptResIdx = remember {
         SCRIPT_RESOLUTION_PRESETS.indexOfFirst { it.width == 1920 && it.height == 1080 }
             .coerceAtLeast(0)
@@ -78,11 +67,9 @@ fun NewProjectDialog(
     var selectedScriptResIdx by remember { mutableIntStateOf(defaultScriptResIdx) }
     var scriptResExpanded by remember { mutableStateOf(false) }
 
-    // Default Layout Resolution = 0x0 -> index 0
     var selectedLayoutResIdx by remember { mutableIntStateOf(0) }
     var layoutResExpanded by remember { mutableStateOf(false) }
 
-    // Default YCbCr Matrix = None -> index 0
     var selectedYcbcrIdx by remember { mutableIntStateOf(0) }
     var ycbcrExpanded by remember { mutableStateOf(false) }
 
@@ -94,7 +81,6 @@ fun NewProjectDialog(
                 .background(BgPanel)
                 .border(1.dp, BorderHighlight, RoundedCornerShape(14.dp)),
         ) {
-            // Header
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -129,12 +115,10 @@ fun NewProjectDialog(
 
             HorizontalDivider(color = BorderColor)
 
-            // Body Fields
             Column(
                 modifier = Modifier.padding(14.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                // 1. Input Project Name
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(
                         text = "PROJECT NAME",
@@ -170,7 +154,6 @@ fun NewProjectDialog(
                     )
                 }
 
-                // 2. Script Resolution (PlayResX x PlayResY)
                 val currentScriptPreset = SCRIPT_RESOLUTION_PRESETS[selectedScriptResIdx]
                 NewProjectDropdownField(
                     label = "SCRIPT RESOLUTION (PLAYRESX × PLAYRESY)",
@@ -195,7 +178,6 @@ fun NewProjectDialog(
                     },
                 )
 
-                // 3. Layout Resolution (Default 0x0)
                 val currentLayoutPreset = LAYOUT_RESOLUTION_PRESETS[selectedLayoutResIdx]
                 NewProjectDropdownField(
                     label = "LAYOUT RESOLUTION",
@@ -210,7 +192,6 @@ fun NewProjectDialog(
                     },
                 )
 
-                // 4. YCbCr Matrix
                 val currentYcbcr = YCBCR_MATRIX_OPTIONS[selectedYcbcrIdx]
                 NewProjectDropdownField(
                     label = "YCBCR MATRIX",
@@ -228,7 +209,6 @@ fun NewProjectDialog(
 
             HorizontalDivider(color = BorderColor)
 
-            // Footer: Batal & OK
             Row(
                 modifier = Modifier
                     .fillMaxWidth()

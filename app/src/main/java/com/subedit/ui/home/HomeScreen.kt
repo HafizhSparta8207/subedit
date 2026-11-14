@@ -68,19 +68,6 @@ import com.subedit.ui.theme.TextMuted
 import com.subedit.ui.theme.TextSecondary
 import com.subedit.ui.theme.TextSubtle
 
-/**
- * Layar Utama (`HomeScreen.kt`) sesuai blueprint `index.html`.
- *
- * Fitur Utama:
- * 1. Status Bar & Header (`Modifier.statusBarsPadding()`), Brand `"SUBEDIT"`, subtitle
- *    `"Subtitle Editor for android"`, dan tombol kotak `Settings` di pojok kanan atas.
- * 2. Tombol Utama `"Add Project"` dengan ikon `+` di atas, teks `"Add Project"` di bawah,
- *    dan *dashed border* (`#334155`). Menekan tombol ini membuka modal `"New Project Properties"`
- *    (`NewProjectDialog`) dan tidak langsung masuk ke editor.
- * 3. State Awal Bersih (First Install): Saat `projects` kosong, menampilkan pesan ramah:
- *    *"Belum ada proyek subtitle. Ketuk '+ Add Project' untuk memulai."*
- * 4. Grid Riwayat Proyek Adaptif (`LazyVerticalGrid` dengan `GridCells.Adaptive(minSize = 160.dp)`).
- */
 @Composable
 fun HomeScreen(
     projects: List<AssProjectItem>,
@@ -122,7 +109,6 @@ fun HomeScreen(
                 horizontalArrangement = Arrangement.spacedBy(gridSpacing),
                 verticalArrangement = Arrangement.spacedBy(gridSpacing),
             ) {
-                // Header Top Bar (Full Span)
                 item(span = { GridItemSpan(maxLineSpan) }) {
                     HomeTopBar(
                         isTablet = isTablet,
@@ -130,7 +116,6 @@ fun HomeScreen(
                     )
                 }
 
-                // Tombol Utama "Add Project" dengan Dashed Border (Full Span)
                 item(span = { GridItemSpan(maxLineSpan) }) {
                     Column {
                         Spacer(modifier = Modifier.height(4.dp))
@@ -142,12 +127,10 @@ fun HomeScreen(
                 }
 
                 if (projects.isEmpty()) {
-                    // Empty State Ramah ketika belum ada proyek tersimpan
                     item(span = { GridItemSpan(maxLineSpan) }) {
                         EmptyProjectsNoticeCard()
                     }
                 } else {
-                    // Grid Kartu Riwayat Proyek
                     items(
                         items = projects,
                         key = { it.id },
@@ -235,7 +218,6 @@ private fun HomeTopBar(
             )
         }
 
-        // Pojok kanan atas: Tombol kotak pengaturan (Settings)
         Box(
             modifier = Modifier
                 .size(36.dp)
@@ -330,7 +312,6 @@ private fun ProjectHistoryCard(
             .border(1.dp, BorderColor, cardShape)
             .clickable(onClick = onClick),
     ) {
-        // Thumbnail 16:9 + Badge Durasi
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -363,7 +344,6 @@ private fun ProjectHistoryCard(
             }
         }
 
-        // Body Kartu: Judul, Tanggal, Jumlah Baris
         Column(
             modifier = Modifier
                 .fillMaxWidth()

@@ -4,9 +4,6 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 
-/**
- * Daftar 12 Font standar Crunchyroll & Aegisub yang dibundel di `assets/fonts/`.
- */
 val CRUNCHYROLL_STANDARD_FONTS: List<String> = listOf(
     "Trebuchet MS",
     "Arial",
@@ -22,9 +19,6 @@ val CRUNCHYROLL_STANDARD_FONTS: List<String> = listOf(
     "Verdana",
 )
 
-/**
- * Preset Resolusi Skrip (`PlayResX x PlayResY`) dan Layout Resolution sesuai standar Aegisub.
- */
 @Immutable
 data class ScriptResolutionPreset(
     val width: Int,
@@ -53,9 +47,6 @@ val SCRIPT_RESOLUTION_PRESETS: List<ScriptResolutionPreset> = listOf(
 val LAYOUT_RESOLUTION_PRESETS: List<ScriptResolutionPreset> =
     listOf(ScriptResolutionPreset(0, 0, "Default")) + SCRIPT_RESOLUTION_PRESETS
 
-/**
- * Daftar pilihan YCbCr Matrix pada inisialisasi proyek baru & Script Properties.
- */
 @Immutable
 data class YCbCrMatrixOption(
     val value: String,
@@ -74,14 +65,8 @@ val YCBCR_MATRIX_OPTIONS: List<YCbCrMatrixOption> = listOf(
     YCbCrMatrixOption("PC.240M", "PC.240M"),
 )
 
-/**
- * Batas aman jumlah karakter per baris (CPL Warning System).
- */
 const val DEFAULT_MAX_SAFE_CPL: Int = 42
 
-/**
- * Label deskriptif untuk Alignment Matrix 3x3 (`\an1` s/d `\an9`).
- */
 val ASS_ALIGNMENT_LABELS: Map<Int, String> = mapOf(
     1 to "\\an1 (Bottom Left)",
     2 to "\\an2 (Bottom Center)",
@@ -94,9 +79,6 @@ val ASS_ALIGNMENT_LABELS: Map<Int, String> = mapOf(
     9 to "\\an9 (Top Right)",
 )
 
-/**
- * Metadata `[Script Info]` pada dokumen ASS.
- */
 @Immutable
 data class AssScriptInfo(
     val title: String = "Project_Subtitle_1",
@@ -111,12 +93,6 @@ data class AssScriptInfo(
     val preservedSections: Map<String, List<String>> = emptyMap(),
 )
 
-/**
- * Definisi lengkap 23 kolom `[V4+ Styles]` sesuai standar Aegisub & Crunchyroll:
- * `Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour,
- *  Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle,
- *  Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding`.
- */
 @Immutable
 data class AssStyle(
     val name: String = "Default",
@@ -141,7 +117,7 @@ data class AssStyle(
     val borderStyle: Int = 1,
     val outline: Float = 2.5f,
     val shadow: Float = 1.5f,
-    val alignment: Int = 2, // 1..9 numpad layout
+    val alignment: Int = 2,
     val marginL: Int = 60,
     val marginR: Int = 60,
     val marginV: Int = 45,
@@ -168,9 +144,6 @@ data class AssStyle(
         }
 
     companion object {
-        /**
-         * Style tunggal `Default` untuk inisialisasi proyek baru yang bersih (Zero-State).
-         */
         fun defaultSingleStyle(): List<AssStyle> = listOf(
             AssStyle(
                 name = "Default",
@@ -264,12 +237,7 @@ data class AssStyle(
     }
 }
 
-/**
- * Konverter warna dua arah antara format Hex (`#RRGGBB`), format Style ASS (`&H00BBGGRR`),
- * dan format Inline Override Tag ASS (`&HBBGGRR&` & `&HAA&`).
- */
 object AssColorConverter {
-
     fun assToHex(assColor: String, fallbackHex: String = "#FFFFFF"): String {
         val cleaned = assColor.trim()
             .removePrefix("&")
@@ -306,9 +274,6 @@ object AssColorConverter {
         return "&H${alphaHex.uppercase()}$bb$gg$rr"
     }
 
-    /**
-     * Mengonversi `#RRGGBB` ke format tag inline ASS `&HBBGGRR&` (Blue-Green-Red).
-     */
     fun hexToAssBgrTag(hexColor: String): String {
         val cleaned = hexColor.trim().removePrefix("#").padStart(6, '0').take(6).uppercase()
         val rr = cleaned.substring(0, 2)
@@ -317,17 +282,11 @@ object AssColorConverter {
         return "&H$bb$gg$rr&"
     }
 
-    /**
-     * Mengonversi nilai transparansi integer (`0..255`) ke format Hex ASS `&HAA&`.
-     */
     fun alphaIntToAssHex(alpha: Int): String {
         val clamped = alpha.coerceIn(0, 255)
         return "&H${clamped.toString(16).uppercase().padStart(2, '0')}&"
     }
 
-    /**
-     * Mem-parsing string `&HAA&` menjadi integer `0..255`.
-     */
     fun assAlphaHexToInt(alphaHex: String): Int? {
         val cleaned = alphaHex.trim()
             .removePrefix("&")
@@ -338,10 +297,6 @@ object AssColorConverter {
         return cleaned.toIntOrNull(16)?.coerceIn(0, 255)
     }
 
-    /**
-     * Membangun string tag warna inline ASS (`{\c&HBBGGRR&}`, `{\2c&HBBGGRR&}`, `{\3c&HBBGGRR&}`, `{\4c&HBBGGRR&}`)
-     * beserta tag alpha jika `alpha > 0`.
-     */
     fun formatColorOverrideTag(tagType: String, hexColor: String, alpha: Int = 0): String {
         val cleanType = when (tagType.trim().removePrefix("\\")) {
             "2c", "3c", "4c" -> tagType.trim().removePrefix("\\")
@@ -369,9 +324,6 @@ object AssColorConverter {
     }
 }
 
-/**
- * Model immutable untuk satu baris dialog ASS (`Dialogue:` atau `Comment:` di bagian `[Events]`).
- */
 @Immutable
 data class AssDialogueEvent(
     val id: Int,
@@ -403,9 +355,6 @@ data class AssDialogueEvent(
         get() = DialogueTokenizer.countCleanCharacters(rawText)
 }
 
-/**
- * Alias dan accessor standar libaegisub untuk [AssDialogueEvent].
- */
 typealias AssEvent = AssDialogueEvent
 
 val AssDialogueEvent.comment: Boolean
@@ -417,14 +366,6 @@ val AssDialogueEvent.start: SubTime
 val AssDialogueEvent.end: SubTime
     get() = SubTime(endUs)
 
-/**
- * 5 Alat Utama Visual Typesetting di bilah bawah Audio Timeline Canvas:
- * 1) Select / Pointer
- * 2) Position (`\pos`)
- * 3) Rotate 2D (`\frz`)
- * 4) Perspective 3D (`\frx` & `\fry`)
- * 5) Scale (`\fscx` & `\fscy`)
- */
 enum class VisualTypesetTool(val symbol: String, val label: String) {
     STANDARD("↖️", "Select / Pointer"),
     POS("✥", "\\pos(x,y)"),
@@ -433,9 +374,6 @@ enum class VisualTypesetTool(val symbol: String, val label: String) {
     SCALE("⤢", "\\fscx/\\fscy"),
 }
 
-/**
- * State transformasi visual yang diekstrak dari tag baris aktif untuk dirender pada monitor video 16:9.
- */
 @Immutable
 data class SubtitleVisualTransform(
     val posX: Float = 960f,
@@ -449,9 +387,6 @@ data class SubtitleVisualTransform(
     val fscy: Float = 100f,
 )
 
-/**
- * Model ringkasan proyek pada layar Home (`HomeScreen.kt`).
- */
 @Immutable
 data class AssProjectItem(
     val id: String,
@@ -466,18 +401,8 @@ data class AssProjectItem(
     val preservedSections: Map<String, List<String>> = scriptInfo.preservedSections,
 ) {
     companion object {
-        /**
-         * State awal beranda saat instalasi pertama: Daftar proyek kosong (`emptyList()`).
-         * Proyek hanya muncul di riwayat setelah pengguna membuat dan menyimpannya.
-         */
         fun defaultProjects(): List<AssProjectItem> = emptyList()
 
-        /**
-         * Membuat proyek baru yang benar-benar bersih (Zero-State Editor):
-         * - Tanpa dummy dialog (`events = emptyList()`)
-         * - Style hanya berisi `Default` (`styles = AssStyle.defaultSingleStyle()`)
-         * - Keyframes kosong (`keyframesUs = emptyList()`)
-         */
         fun createZeroStateProject(
             projectIndex: Int = 1,
             title: String = "Project_Subtitle_$projectIndex",

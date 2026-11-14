@@ -1,15 +1,7 @@
 package com.subedit.core.domain
 
-/**
- * Representasi waktu subtitle dalam satuan mikrodetik ([Long]) untuk mencegah
- * floating-point rounding error pada operasi timing, sinkronisasi frame, dan pembagian durasi.
- *
- * Format waktu standar SubStation Alpha (ASS v4+): `H:MM:SS.CS`
- * Format waktu SubRip (SRT): `HH:MM:SS,mmm`
- */
 @JvmInline
 value class SubTime(val microseconds: Long) : Comparable<SubTime> {
-
     val centiseconds: Long
         get() = (microseconds + (US_PER_CS / 2L)) / US_PER_CS
 
@@ -46,9 +38,6 @@ value class SubTime(val microseconds: Long) : Comparable<SubTime> {
 
         val ZERO = SubTime(0L)
 
-        /**
-         * Mengonversi waktu mikrodetik ([Long]) menjadi string format ASS `"H:MM:SS.CS"`.
-         */
         fun formatAss(timeUs: Long): String {
             val clampedUs = if (timeUs < 0L) 0L else timeUs
             val totalCs = (clampedUs + (US_PER_CS / 2L)) / US_PER_CS
@@ -74,9 +63,6 @@ value class SubTime(val microseconds: Long) : Comparable<SubTime> {
             }
         }
 
-        /**
-         * Format durasi singkat dalam detik dengan 2 desimal (misal `"2.00s"`).
-         */
         fun formatDurationSeconds(durationUs: Long): String {
             val clamped = durationUs.coerceAtLeast(0L)
             val totalCs = (clamped + (US_PER_CS / 2L)) / US_PER_CS
@@ -91,10 +77,6 @@ value class SubTime(val microseconds: Long) : Comparable<SubTime> {
             }
         }
 
-        /**
-         * Mengonversi string format ASS `"H:MM:SS.CS"` atau SRT `"HH:MM:SS,mmm"`
-         * kembali ke satuan mikrodetik ([Long]) menggunakan aritmetika integer murni.
-         */
         fun parseAss(rawTime: String): Long {
             val trimmed = rawTime.trim()
             require(trimmed.isNotEmpty()) { "String waktu tidak boleh kosong." }

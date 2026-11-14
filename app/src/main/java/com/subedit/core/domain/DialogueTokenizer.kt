@@ -3,22 +3,12 @@ package com.subedit.core.domain
 import kotlin.math.max
 import kotlin.math.roundToInt
 
-/**
- * Representasi token pada satu baris dialog ASS:
- * - [TagToken]: Blok override tag ASS di dalam kurung kurawal `{...}`.
- * - [TextToken]: Teks dialog murni di luar kurung kurawal.
- */
 sealed class DialogueToken {
     data class TagToken(val raw: String) : DialogueToken()
     data class TextToken(val text: String) : DialogueToken()
 }
 
-/**
- * Tokenizer, parser visual transform, dan Single-Block Tag Upsert Parser berstandar Aegisub.
- * Semua ekspresi reguler dikompilasi satu kali pada level objek (zero GC allocation in loop).
- */
 object DialogueTokenizer {
-
     private val REGEX_ASS_TAGS = Regex("""\{[^}]*\}""")
     private val REGEX_UNCLOSED_TRAILING_TAG = Regex("""\{[^}]*$""")
     private val REGEX_BREAK_TOKENS = Regex("""\\[Nnh]""")
@@ -38,9 +28,6 @@ object DialogueTokenizer {
         val body: String,
     )
 
-    /**
-     * Memecah string ASS mentah menjadi daftar berurutan [DialogueToken] secara O(N).
-     */
     fun tokenize(rawAss: String): List<DialogueToken> {
         if (rawAss.isEmpty()) return emptyList()
 
@@ -72,9 +59,6 @@ object DialogueTokenizer {
         return tokens
     }
 
-    /**
-     * Menggabungkan kembali daftar [DialogueToken] menjadi string ASS utuh.
-     */
     fun detokenize(tokens: List<DialogueToken>): String {
         if (tokens.isEmpty()) return ""
         val totalLen = tokens.sumOf { token ->
@@ -93,9 +77,6 @@ object DialogueTokenizer {
         }
     }
 
-    /**
-     * Mengekstrak hanya bagian [DialogueToken.TextToken].
-     */
     fun extractEditableText(
         tokens: List<DialogueToken>,
         segmentDelimiter: String = "",
@@ -109,9 +90,6 @@ object DialogueTokenizer {
     fun extractEditableText(rawAss: String, segmentDelimiter: String = ""): String =
         extractEditableText(tokenize(rawAss), segmentDelimiter)
 
-    /**
-     * Mengganti teks terjemahan hanya pada [DialogueToken.TextToken] tanpa merusak [DialogueToken.TagToken].
-     */
     fun updateEditableText(
         tokens: List<DialogueToken>,
         editedText: String,
@@ -155,12 +133,6 @@ object DialogueTokenizer {
     fun replaceEditableText(rawAss: String, editedText: String): String =
         detokenize(updateEditableText(tokenize(rawAss), editedText))
 
-    /**
-     * Memformat teks ASS untuk dirender pada Monitor Video 16:9 sesuai standar Libass:
-     * - Menghapus seluruh blok tag `{...}` dengan regex global `\{[^}]*\}`
-     * - Mengubah `\N` menjadi baris baru (`\n`)
-     * - Mengubah `\n` menjadi spasi dan `\h` menjadi non-breaking space (`\u00A0`)
-     */
     fun formatForVideoDisplay(rawAss: String): String {
         if (rawAss.isEmpty()) return ""
         var cleaned = rawAss
@@ -174,11 +146,6 @@ object DialogueTokenizer {
             .replace("\\h", "\u00A0")
     }
 
-    /**
-     * Memformat label baris dialog di atas kanvas waveform audio sesuai standar Subtitle Edit:
-     * - Menyembunyikan kurung kurawal `{...}` HANYA saat rendering label kanvas tanpa mengubah data asli
-     * - Mengubah `\N`, `\n`, `\h` menjadi spasi tunggal dan melakukan `.trim()`
-     */
     fun formatForWaveformLabel(rawAss: String): String {
         if (rawAss.isEmpty()) return ""
         var cleaned = rawAss
@@ -191,9 +158,6 @@ object DialogueTokenizer {
             .trim()
     }
 
-    /**
-     * Menghitung jumlah karakter bersih tanpa tag `{...}` dan tanpa token `\N`, `\n`, `\h`.
-     */
     fun countCleanCharacters(rawAss: String): Int {
         if (rawAss.isEmpty()) return 0
         var cleaned = rawAss
@@ -206,21 +170,10 @@ object DialogueTokenizer {
             .length
     }
 
-    /**
-     * Mem-parsing seluruh blok tag override `{...}` yang berurutan di awal baris dialog
-     * (sebelum karakter teks pertama) ke dalam satu struktur [LinkedHashMap] (`key -> \tagValue`),
-     * sambil tetap mempertahankan blok tag inline yang berada di tengah kalimat.
-     */
     fun parseHeadTagMap(rawText: String): LinkedHashMap<String, String> {
         return parseLeadingBlocks(rawText).tagMap
     }
 
-    /**
-     * Menyuntikkan atau memperbarui override tag (`\b`, `\i`, `\u`, `\s`, `\c`, `\2c`, `\3c`, `\4c`,
-     * `\pos`, `\move`, `\frz`, `\fscx`, `\fscy`, `\clip`, dll.) ke dalam satu struktur
-     * `LinkedHashMap<String, String>` terpusat, menimpa nilai kunci yang sesuai, lalu merakitnya kembali
-     * menjadi satu blok `{...}` tunggal di awal dialog tanpa menyentuh blok tag inline di tengah kalimat.
-     */
     fun injectOrUpdateHeadTags(
         rawText: String,
         tagUpdates: Map<String, String>,
@@ -263,10 +216,6 @@ object DialogueTokenizer {
         )
     }
 
-    /**
-     * Toggle tag format `B` (`\b1`/`\b0`), `I` (`\i1`/`\i0`), `U` (`\u1`/`\u0`), atau `S` (`\s1`/`\s0`)
-     * di dalam map blok `{...}` tunggal di awal dialog tanpa menyisipkan string di posisi kursor.
-     */
     fun toggleFormatTag(
         rawText: String,
         tagKey: String,
@@ -286,10 +235,6 @@ object DialogueTokenizer {
         return injectOrUpdateHeadTags(rawText, mapOf(cleanKey to nextValue))
     }
 
-    /**
-     * Menimpa tag warna (`\c`, `\2c`, `\3c`, `\4c` beserta alpha `\1a`–`\4a` bila ada)
-     * ke dalam satu blok `{...}` tunggal di awal dialog tanpa menyisipkan di posisi kursor.
-     */
     fun applyColorOverrideTag(
         rawText: String,
         formattedColorTagBlock: String,
@@ -316,7 +261,6 @@ object DialogueTokenizer {
             }
         }
 
-        // Jika warna baru bersifat solid (tanpa token alpha), bersihkan alpha slot lama yang sejenis
         if (updatedColorSlot != null && !hasAlphaToken) {
             val correspondingAlphaKey = when (updatedColorSlot) {
                 "c" -> "1a"
@@ -340,10 +284,6 @@ object DialogueTokenizer {
     fun upsertPosTag(rawAss: String, x: Int, y: Int): String =
         injectOrUpdateHeadTags(rawAss, mapOf("pos" to "\\pos($x,$y)"))
 
-    /**
-     * Mem-parsing seluruh blok `{...}` yang berurutan di awal baris (sebelum karakter teks pertama),
-     * termasuk memulihkan blok yang terpecah/bersarang, ke dalam [LeadingParseResult].
-     */
     private fun parseLeadingBlocks(rawText: String): LeadingParseResult {
         val tagMap = LinkedHashMap<String, String>()
         val preservedComments = ArrayList<String>(1)
@@ -372,8 +312,6 @@ object DialogueTokenizer {
 
             val rawGroup = rawText.substring(index + 1, closeIdx)
             if (rawGroup.contains('\\') || rawGroup.isBlank()) {
-                // Jika terdapat blok kurawal bersarang akibat penyisipan kursor lama (misal {\fsc{\c&HFFFFFF&}y191}),
-                // ekstrak blok dalam terlebih dahulu lalu pulihkan blok luarnya.
                 val nestedMatches = REGEX_ASS_TAGS.findAll(rawGroup).toList()
                 val repairedOuter = if (nestedMatches.isNotEmpty()) {
                     var temp = rawGroup
@@ -407,7 +345,6 @@ object DialogueTokenizer {
                     }
                 }
             } else {
-                // Pertahankan blok komentar murni tanpa backslash (misal {とても嬉しくて...})
                 preservedComments.add("{$rawGroup}")
             }
 
@@ -442,9 +379,6 @@ object DialogueTokenizer {
         return headBlock + commentsBlock + body
     }
 
-    /**
-     * Memecah isi blok `{...}` menjadi daftar token `\tag...` individual.
-     */
     private fun extractIndividualTags(rawBlockOrTag: String): List<String> {
         val cleaned = rawBlockOrTag.trim().removePrefix("{").removeSuffix("}")
         if (cleaned.isEmpty() || !cleaned.contains('\\')) return emptyList()
@@ -483,14 +417,6 @@ object DialogueTokenizer {
         return result
     }
 
-    /**
-     * Menentukan kunci kanonis untuk satu token tag ASS (misal `\pos(960,965)` -> `"pos"`).
-     * Pemisahan nama tag & argumen yang ketat memastikan prefiks yang mirip tidak pernah bertabrakan:
-     * - `\b` tidak menyentuh `\bord`, `\blur`, `\be`
-     * - `\fs` tidak menyentuh `\fscx`, `\fscy`, `\fsp`
-     * - `\frz`, `\frx`, `\fry` terpisah dan tidak menyentuh `\fn`
-     * - `\p` tidak menyentuh `\pos`
-     */
     private fun resolveCanonicalTagKey(tagToken: String): String? {
         val body = tagToken.trim().removePrefix("\\")
         if (body.isEmpty()) return null
@@ -549,9 +475,6 @@ object DialogueTokenizer {
         return if (cleaned == "1c") "c" else cleaned
     }
 
-    /**
-     * Mem-parsing posisi anchor default dan transformasi visual dari tag ASS pada baris aktif.
-     */
     fun parseVisualTransform(
         rawText: String,
         style: AssStyle,

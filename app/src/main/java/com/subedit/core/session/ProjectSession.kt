@@ -6,9 +6,6 @@ import com.subedit.core.domain.AssProjectItem
 import com.subedit.core.domain.AssScriptInfo
 import com.subedit.core.domain.AssStyle
 
-/**
- * Immutable in-memory representation of an ASS script.
- */
 data class AssScript(
     val scriptInfo: AssScriptInfo = AssScriptInfo(),
     val styles: List<AssStyle> = AssStyle.defaultSingleStyle(),
@@ -30,17 +27,11 @@ data class AssScript(
     }
 }
 
-/**
- * Snapshot state naskah untuk riwayat Undo / Redo di [ProjectSessionManager].
- */
 data class SessionHistorySnapshot(
     val script: AssScript,
     val activeEventId: Int?,
 )
 
-/**
- * Active session state shared across the Compose editor UI and the libmpv media player.
- */
 data class ProjectSessionState(
     val projectId: String = "",
     val script: AssScript = AssScript(),
@@ -62,9 +53,6 @@ data class ProjectSessionState(
     val selectedEventId: Int?
         get() = activeEventId
 
-    /**
-     * Durasi virtual dari waktu `end` maksimum daftar event saat belum ada video/audio (`isMediaLoaded == false`).
-     */
     val virtualDurationUs: Long
         get() {
             val maxEventEndUs = script.events.maxOfOrNull { it.endUs } ?: 0L

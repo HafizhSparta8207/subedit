@@ -11,13 +11,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 
-/**
- * Single source of truth for the active subtitle project session in memory.
- * Ensures the Jetpack Compose editor UI and the libmpv player layer observe
- * and operate on an identical memory instance.
- */
 object ProjectSessionManager {
-
     private const val MAX_HISTORY_SIZE = 40
 
     private val _sessionState = MutableStateFlow(ProjectSessionState())
@@ -26,9 +20,6 @@ object ProjectSessionManager {
     private val undoStack = ArrayDeque<SessionHistorySnapshot>()
     private val redoStack = ArrayDeque<SessionHistorySnapshot>()
 
-    /**
-     * Initializes or resets the session from an [AssProjectItem] instance.
-     */
     @Synchronized
     fun initializeSession(
         project: AssProjectItem,
@@ -66,12 +57,6 @@ object ProjectSessionManager {
         )
     }
 
-    /**
-     * Applies a newly imported subtitle document:
-     * - Resets `selectedEventId = null` (`activeEventId = null`)
-     * - Resets Undo/Redo history
-     * - Replaces `styles`, `events`, and `preservedSections` in full
-     */
     @Synchronized
     fun applyImportedDocument(parsedDoc: SubtitleParser.ParsedSubtitleDocument) {
         undoStack.clear()
@@ -92,21 +77,12 @@ object ProjectSessionManager {
         }
     }
 
-    /**
-     * Updates the media loaded status (`true` only when libmpv has loaded an active video/audio stream).
-     */
     fun setMediaLoaded(loaded: Boolean) {
         _sessionState.update { it.copy(isMediaLoaded = loaded) }
     }
 
-    /**
-     * Returns `true` if a video or audio file is currently loaded in `libmpv`.
-     */
     fun isMediaLoaded(): Boolean = _sessionState.value.isMediaLoaded
 
-    /**
-     * Resets the Undo/Redo history stack.
-     */
     @Synchronized
     fun resetUndoHistory() {
         undoStack.clear()
@@ -116,10 +92,6 @@ object ProjectSessionManager {
         }
     }
 
-    /**
-     * Updates playhead timestamp and syncs active dialogue line using [ActiveSubtitleResolver].
-     * Never increments [ProjectSessionState.contentRevision] so playhead movement does not reload subtitles.
-     */
     fun updatePlayhead(timeUs: Long): AssDialogueEvent? {
         val currentState = _sessionState.value
         val activeLine = ActiveSubtitleResolver.findActiveDialogueUs(currentState.script.events, timeUs)
@@ -132,23 +104,14 @@ object ProjectSessionManager {
         return activeLine
     }
 
-    /**
-     * Sets the active/selected dialogue event ID explicitly (e.g. from table or timeline selection).
-     */
     fun setActiveEventId(id: Int?) {
         _sessionState.update { it.copy(activeEventId = id) }
     }
 
-    /**
-     * Updates playback playing/paused status.
-     */
     fun updatePlaybackState(isPlaying: Boolean) {
         _sessionState.update { it.copy(isPlaying = isPlaying) }
     }
 
-    /**
-     * Updates the media loading status (`true` from file selection until libmpv renders first frame).
-     */
     fun setMediaLoading(isLoading: Boolean, progress: Int? = null, stageMessage: String? = null) {
         _sessionState.update { current ->
             current.copy(
@@ -159,13 +122,9 @@ object ProjectSessionManager {
         }
     }
 
-    /**
-     * Updates the staged media loading percentage (0% - 100%) and optional status label.
-     */
     fun updateLoadingProgress(progress: Int, stageMessage: String? = null) {
         _sessionState.update { current ->
             val clamped = progress.coerceIn(0, 100)
-            // Prevent progress bar from moving backwards while loading
             val effectiveProgress = if (current.isMediaLoading) maxOf(current.loadingProgress, clamped) else clamped
             current.copy(
                 loadingProgress = effectiveProgress,
@@ -174,10 +133,6 @@ object ProjectSessionManager {
         }
     }
 
-    /**
-     * Adds a new dialogue event, automatically selects it (`selectedEventId = newEvent.id`),
-     * records an Undo snapshot, and increments `contentRevision`.
-     */
     @Synchronized
     fun addEvent(
         initialText: String = "",
@@ -212,10 +167,6 @@ object ProjectSessionManager {
         return newEvent
     }
 
-    /**
-     * Deletes the specified (or currently active) dialogue event, updates `activeEventId`,
-     * records an Undo snapshot, and increments `contentRevision`.
-     */
     @Synchronized
     fun deleteEvent(eventId: Int? = _sessionState.value.activeEventId): Int? {
         val targetId = eventId ?: return _sessionState.value.activeEventId
@@ -238,16 +189,10 @@ object ProjectSessionManager {
         return nextActiveId
     }
 
-    /**
-     * Updates the media duration reported by libmpv or the waveform extractor.
-     */
     fun setMediaDuration(durationUs: Long) {
         _sessionState.update { it.copy(mediaDurationUs = durationUs.coerceAtLeast(0L)) }
     }
 
-    /**
-     * Records the current script and active event ID onto the Undo history stack.
-     */
     @Synchronized
     fun pushUndoSnapshot() {
         val current = _sessionState.value
@@ -269,10 +214,6 @@ object ProjectSessionManager {
         }
     }
 
-    /**
-     * Restores the previous snapshot from the Undo stack and increments [ProjectSessionState.contentRevision]
-     * so `sub-reload` is triggered on `libmpv`.
-     */
     @Synchronized
     fun undo(): SessionHistorySnapshot? {
         val previous = undoStack.removeLastOrNull() ?: return null
@@ -295,10 +236,6 @@ object ProjectSessionManager {
         return previous
     }
 
-    /**
-     * Re-applies the next snapshot from the Redo stack and increments [ProjectSessionState.contentRevision]
-     * so `sub-reload` is triggered on `libmpv`.
-     */
     @Synchronized
     fun redo(): SessionHistorySnapshot? {
         val next = redoStack.removeLastOrNull() ?: return null
@@ -321,9 +258,6 @@ object ProjectSessionManager {
         return next
     }
 
-    /**
-     * Updates the script content (metadata, styles, or dialogue lines) and increments the content revision.
-     */
     @Synchronized
     fun updateScript(recordUndo: Boolean = false, transform: (AssScript) -> AssScript) {
         if (recordUndo) {
@@ -340,9 +274,6 @@ object ProjectSessionManager {
         }
     }
 
-    /**
-     * Updates the currently active dialogue line in-place and increments [ProjectSessionState.contentRevision].
-     */
     @Synchronized
     fun updateActiveDialogue(
         recordUndo: Boolean = false,
@@ -363,32 +294,19 @@ object ProjectSessionManager {
         return updatedEvent
     }
 
-    /**
-     * Updates the raw text of the currently active dialogue line immediately in memory
-     * and increments [ProjectSessionState.contentRevision].
-     */
     @Synchronized
     fun updateActiveDialogueText(newText: String, recordUndo: Boolean = false): AssDialogueEvent? {
         return updateActiveDialogue(recordUndo = recordUndo) { it.copy(rawText = newText) }
     }
 
-    /**
-     * Returns the currently active dialogue event.
-     */
     fun getActiveDialogue(): AssDialogueEvent? {
         val state = _sessionState.value
         val id = state.activeEventId ?: return null
         return state.script.events.firstOrNull { it.id == id }
     }
 
-    /**
-     * Returns the current script snapshot.
-     */
     fun getCurrentScript(): AssScript = _sessionState.value.script
 
-    /**
-     * Resets the active session.
-     */
     @Synchronized
     fun clearSession() {
         undoStack.clear()

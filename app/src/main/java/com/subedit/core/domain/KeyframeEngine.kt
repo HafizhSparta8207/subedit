@@ -3,26 +3,13 @@ package com.subedit.core.domain
 import kotlin.math.abs
 import kotlin.math.roundToLong
 
-/**
- * Engine parser dan magnetic snapping untuk keyframe video (`.txt` / `.log` Aegisub v1, Crunchyroll, & XviD).
- */
 object KeyframeEngine {
-
-    const val DEFAULT_SNAP_THRESHOLD_US: Long = 100_000L // 100 ms
+    const val DEFAULT_SNAP_THRESHOLD_US: Long = 100_000L
     const val DEFAULT_FALLBACK_FPS: Double = 23.976
 
     private val WHITESPACE_REGEX = Regex("""\s+""")
     private val DIGITS_REGEX = Regex("""\d+""")
 
-    /**
-     * Mem-parsing file keyframe format v1 Crunchyroll / Aegisub menjadi daftar waktu dalam detik (`Double`).
-     *
-     * Aturan:
-     * - Abaikan baris komentar `#...` dan baris kosong.
-     * - Jika baris diawali `fps`, tangkap nilai FPS jika bukan `0`. Jika bernilai `0`, gunakan [fallbackFps] (default: `23.976`).
-     * - Pada baris data frame (contoh: `171 I -1` atau `171`), ambil angka pertama sebagai integer (`frameNumber`)
-     *   dan konversikan ke detik waktu riil: `timeSec = frameNumber / fps`.
-     */
     fun parseKeyframes(
         content: String,
         fallbackFps: Double = DEFAULT_FALLBACK_FPS,
@@ -46,7 +33,6 @@ object KeyframeEngine {
                 return@forEach
             }
 
-            // Dukungan log XviD / DivX: "type I" pada frame ke-N
             if (line.startsWith("i ", ignoreCase = true) || line.contains("type:i", ignoreCase = true)) {
                 val frameNum = DIGITS_REGEX.find(line)?.value?.toLongOrNull()
                 if (frameNum != null && frameNum >= 0L) {
@@ -65,7 +51,6 @@ object KeyframeEngine {
             val parts = line.split(WHITESPACE_REGEX)
             val firstToken = parts.firstOrNull().orEmpty()
 
-            // Jika tanpa header fps dan token pertama berupa angka desimal detik murni
             if (!hasExplicitFpsHeader && parts.size == 1 && '.' in firstToken) {
                 val seconds = firstToken.toDoubleOrNull()
                 if (seconds != null && seconds >= 0.0) {
@@ -74,7 +59,6 @@ object KeyframeEngine {
                 return@forEach
             }
 
-            // Baris data frame (contoh: "0 I -1", "4 I -1", "171 I -1", atau "171")
             val frameNumber = firstToken.toLongOrNull()
             if (frameNumber != null && frameNumber >= 0L) {
                 val timeSec = frameNumber.toDouble() / fps
@@ -87,9 +71,6 @@ object KeyframeEngine {
         return keyframes
     }
 
-    /**
-     * Mem-parsing file keyframe (`.txt` / `.log`) menjadi daftar mikrodetik (`Long`) yang terurut dan unik.
-     */
     fun parseKeyframesTxt(
         content: String,
         fallbackFps: Double = DEFAULT_FALLBACK_FPS,

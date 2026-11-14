@@ -8,26 +8,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import java.util.concurrent.ConcurrentHashMap
 
-/**
- * Repository pemuat dan cache font lokal dari `app/src/main/assets/fonts/` untuk menjamin
- * rendering teks di monitor video 16:9 dan Live Preview Style konsisten dengan Aegisub desktop.
- *
- * Daftar font standar Crunchyroll yang didukung di `assets/fonts/`:
- * - `Trebuchet MS` -> `fonts/Trebuchet_MS.ttf`
- * - `Arial` -> `fonts/Arial.ttf`
- * - `Arial Black` -> `fonts/Arial_Black.ttf`
- * - `Comic Sans MS` -> `fonts/Comic_Sans_MS.ttf`
- * - `Courier New` -> `fonts/Courier_New.ttf`
- * - `DejaVu Sans` -> `fonts/DejaVu_Sans.ttf`
- * - `Georgia` -> `fonts/Georgia.ttf`
- * - `Impact` -> `fonts/Impact.ttf`
- * - `Rubik` -> `fonts/Rubik.ttf`
- * - `Tahoma` -> `fonts/Tahoma.ttf`
- * - `Times New Roman` -> `fonts/Times_New_Roman.ttf`
- * - `Verdana` -> `fonts/Verdana.ttf`
- */
 object FontRepository {
-
     val STANDARD_FONT_NAMES: List<String> = listOf(
         "Trebuchet MS",
         "Arial",
@@ -61,16 +42,9 @@ object FontRepository {
     private val fontFamilyCache = ConcurrentHashMap<String, FontFamily>()
     private val typefaceCache = ConcurrentHashMap<String, Typeface>()
 
-    /**
-     * Mengembalikan path file font di dalam `assets/` untuk nama font ASS yang diberikan.
-     */
     fun resolveAssetFileName(fontName: String): String =
         FONT_ASSET_MAP[fontName.trim().lowercase()] ?: "fonts/Trebuchet_MS.ttf"
 
-    /**
-     * Mengambil [FontFamily] Compose dari `assets/fonts/` dengan in-memory cache.
-     * Aman dipanggil berulang kali tanpa membebani I/O maupun memori.
-     */
     fun getFontFamily(context: Context, fontName: String): FontFamily {
         val key = fontName.trim().lowercase()
         fontFamilyCache[key]?.let { return it }
@@ -100,9 +74,6 @@ object FontRepository {
         return fallback
     }
 
-    /**
-     * Helper Composable untuk meresolusi [FontFamily] dari nama font ASS.
-     */
     @Composable
     fun rememberAssFontFamily(fontName: String): FontFamily {
         val context = LocalContext.current
