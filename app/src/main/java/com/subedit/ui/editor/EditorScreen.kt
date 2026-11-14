@@ -4,6 +4,7 @@ import android.net.Uri
 import android.util.Log
 import android.view.SurfaceView
 import android.view.ViewGroup
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -35,16 +36,21 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -54,6 +60,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -61,8 +68,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -95,13 +104,16 @@ import com.subedit.core.domain.DEFAULT_MAX_SAFE_CPL
 import com.subedit.core.domain.DialogueTokenizer
 import com.subedit.core.domain.SubTime
 import com.subedit.core.domain.SubtitleVisualTransform
+import com.subedit.core.domain.TimingConstraints
 import com.subedit.core.domain.VisualTypesetTool
+import com.subedit.core.domain.start
 import com.subedit.core.font.FontRepository
 import com.subedit.core.mpv.MpvMediaHelper
 import com.subedit.core.mpv.MpvPlaybackListener
 import com.subedit.core.mpv.SubEditMpvView
 import com.subedit.core.session.AssScript
 import com.subedit.core.session.ProjectSessionManager
+import com.subedit.core.video.ChromaProxyConverter
 import com.subedit.ui.editor.dialogs.ColorSelectorDialog
 import com.subedit.ui.editor.dialogs.HelpDialog
 import com.subedit.ui.editor.dialogs.PropertiesDialog
@@ -128,6 +140,7 @@ import com.subedit.ui.theme.TextMuted
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlin.math.atan2
+import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -148,6 +161,7 @@ private data class EditorHistorySnapshot(
 @Composable
 fun EditorScreen(
     project: AssProjectItem,
+    subtitleImportVersion: Int = 0,
     videoUri: Uri?,
     audioUri: Uri?,
     externalErrorMessage: String?,
@@ -164,32 +178,26 @@ fun EditorScreen(
     val context = LocalContext.current
 
     // State Skrip, Styles, Dialogues, dan Keyframes
-    var scriptInfo by remember(project) { mutableStateOf(project.scriptInfo) }
-    val styles = remember(project) {
+    var scriptInfo by remember(project.id) { mutableStateOf(project.scriptInfo) }
+    val styles = remember(project.id) {
         mutableStateListOf<AssStyle>().apply {
             addAll(project.styles.ifEmpty { AssStyle.defaultSingleStyle() })
         }
     }
-    val events = remember(project) {
+    val events = remember(project.id) {
         mutableStateListOf<AssDialogueEvent>().apply { addAll(project.events) }
     }
-    val keyframesUs = remember(project) {
+    val keyframesUs = remember(project.id, project.keyframesUs) {
         mutableStateListOf<Long>().apply { addAll(project.keyframesUs) }
     }
 
-    // Jika proyek memiliki dialog, pilih baris pertama; jika Zero-State (kosong), activeEventId = null
-    var activeEventId by remember(project) {
+    // Jika proyek memiliki dialog saat awal dibuka, pilih baris pertama; saat impor baru di-reset ke null
+    var activeEventId by remember(project.id) {
         mutableStateOf<Int?>(project.events.firstOrNull()?.id)
     }
 
-    // Inisialisasi sesi tunggal ProjectSessionManager di memori
-    LaunchedEffect(project.id) {
-        ProjectSessionManager.initializeSession(
-            project = project,
-            videoUri = videoUri,
-            audioUri = audioUri,
-        )
-    }
+    // Observasi state sesi tunggal ProjectSessionManager di memori
+    val sessionState by ProjectSessionManager.sessionState.collectAsState()
 
     // Native libmpv Core View (vo=gpu, gpu-context=android, hwdec=auto-safe, native libass)
     val mpvView = remember(context) {
@@ -201,89 +209,59 @@ fun EditorScreen(
         }
     }
 
-    // Fungsi pembantu sinkronisasi skrip .ass langsung ke core native libass
-    fun syncSubtitleWithMpv() {
-        if (videoUri != null && events.isNotEmpty()) {
-            runCatching {
-                val liveAss = MpvMediaHelper.writeLiveAssPreview(
-                    context = context,
-                    scriptInfo = scriptInfo,
-                    styles = styles.toList(),
-                    events = events.toList(),
-                )
+    // Fungsi pembantu sinkronisasi skrip .ass langsung ke core native libass:
+    // - Guard status libmpv: Jangan pernah mengirim perintah native jika belum ada media aktif (isMediaLoaded == false).
+    // - Tetap menulis header [Script Info], [V4+ Styles], dan [Events] meskipun daftar events kosong (setelah hapus baris terakhir).
+    fun syncSubtitleWithMpv(forceFreshReAdd: Boolean = false) {
+        if (videoUri == null || !mpvView.isMediaLoaded || !sessionState.isMediaLoaded) return
+        runCatching {
+            val liveAss = MpvMediaHelper.writeLiveAssPreview(
+                context = context,
+                scriptInfo = scriptInfo,
+                styles = styles.toList(),
+                events = events.toList(),
+            )
+            if (forceFreshReAdd) {
+                mpvView.reloadFreshSubtitleFile(liveAss.absolutePath)
+            } else {
                 mpvView.loadOrReloadSubtitle(liveAss.absolutePath)
             }
         }
     }
 
-    // Undo / Redo History Stacks
-    val undoStack = remember { mutableStateListOf<EditorHistorySnapshot>() }
-    val redoStack = remember { mutableStateListOf<EditorHistorySnapshot>() }
-
-    fun pushUndoSnapshot() {
-        undoStack.add(
-            EditorHistorySnapshot(
-                scriptInfo = scriptInfo,
-                styles = styles.toList(),
-                events = events.toList(),
-                activeEventId = activeEventId,
-            )
+    // Inisialisasi sesi awal proyek
+    LaunchedEffect(project.id) {
+        ProjectSessionManager.initializeSession(
+            project = project,
+            videoUri = videoUri,
+            audioUri = audioUri,
         )
-        if (undoStack.size > 40) undoStack.removeAt(0)
-        redoStack.clear()
+    }
+
+    // Undo / Redo History terintegrasi dengan ProjectSessionManager
+    fun pushUndoSnapshot() {
+        ProjectSessionManager.pushUndoSnapshot()
     }
 
     fun performUndo() {
-        val prev = undoStack.removeLastOrNull() ?: return
-        redoStack.add(
-            EditorHistorySnapshot(
-                scriptInfo = scriptInfo,
-                styles = styles.toList(),
-                events = events.toList(),
-                activeEventId = activeEventId,
-            )
-        )
-        scriptInfo = prev.scriptInfo
+        val prev = ProjectSessionManager.undo() ?: return
+        scriptInfo = prev.script.scriptInfo
         styles.clear()
-        styles.addAll(prev.styles)
+        styles.addAll(prev.script.styles)
         events.clear()
-        events.addAll(prev.events)
+        events.addAll(prev.script.events)
         activeEventId = prev.activeEventId
-        ProjectSessionManager.updateScript {
-            AssScript(
-                scriptInfo = scriptInfo,
-                styles = styles.toList(),
-                events = events.toList(),
-            )
-        }
-        ProjectSessionManager.setActiveEventId(activeEventId)
         syncSubtitleWithMpv()
     }
 
     fun performRedo() {
-        val next = redoStack.removeLastOrNull() ?: return
-        undoStack.add(
-            EditorHistorySnapshot(
-                scriptInfo = scriptInfo,
-                styles = styles.toList(),
-                events = events.toList(),
-                activeEventId = activeEventId,
-            )
-        )
-        scriptInfo = next.scriptInfo
+        val next = ProjectSessionManager.redo() ?: return
+        scriptInfo = next.script.scriptInfo
         styles.clear()
-        styles.addAll(next.styles)
+        styles.addAll(next.script.styles)
         events.clear()
-        events.addAll(next.events)
+        events.addAll(next.script.events)
         activeEventId = next.activeEventId
-        ProjectSessionManager.updateScript {
-            AssScript(
-                scriptInfo = scriptInfo,
-                styles = styles.toList(),
-                events = events.toList(),
-            )
-        }
-        ProjectSessionManager.setActiveEventId(activeEventId)
         syncSubtitleWithMpv()
     }
 
@@ -302,7 +280,7 @@ fun EditorScreen(
     }
 
     // State Playhead & Playback
-    var currentPlayheadUs by remember(project) {
+    var currentPlayheadUs by remember(project.id) {
         mutableLongStateOf(project.events.firstOrNull()?.startUs ?: 0L)
     }
     var isPlaying by remember { mutableStateOf(false) }
@@ -329,12 +307,12 @@ fun EditorScreen(
         )
     }
     LaunchedEffect(activeEventId, activeEvent?.rawText) {
-        if (activeEventId == null || activeEvent == null) {
+        if (activeEventId == null) {
             if (textFieldValue.text.isNotEmpty()) {
                 textFieldValue = TextFieldValue(text = "", selection = TextRange.Zero)
             }
         } else {
-            val currentRaw = activeEvent?.rawText.orEmpty()
+            val currentRaw = activeEvent?.rawText ?: return@LaunchedEffect
             if (textFieldValue.text != currentRaw) {
                 textFieldValue = TextFieldValue(
                     text = currentRaw,
@@ -344,25 +322,60 @@ fun EditorScreen(
         }
     }
 
-    // Audio Waveform: null saat belum ada file audio/video (flat timeline), diekstrak saat media dimuat
+    // Sinkronisasi saat berkas .ass / .srt baru diimpor dari penyimpanan:
+    // - Reset selectedEventId = null, reset riwayat undo, dan replace penuh daftar styles & events
+    // - Jika video sudah dimuat (isMediaLoaded == true), tulis & flush .ass lalu panggil sub-remove -> sub-add -> sub-visibility=yes
+    LaunchedEffect(subtitleImportVersion) {
+        if (subtitleImportVersion > 0) {
+            isPlaying = false
+            activeEventId = null
+            textFieldValue = TextFieldValue(text = "", selection = TextRange.Zero)
+            ProjectSessionManager.setActiveEventId(null)
+            ProjectSessionManager.resetUndoHistory()
+            scriptInfo = project.scriptInfo
+            styles.clear()
+            styles.addAll(project.styles.ifEmpty { AssStyle.defaultSingleStyle() })
+            events.clear()
+            events.addAll(project.events)
+            if (!sessionState.isMediaLoaded) {
+                val firstDialogStartUs = project.events.firstOrNull { !it.isComment }?.startUs
+                    ?: project.events.firstOrNull()?.startUs
+                    ?: 0L
+                currentPlayheadUs = firstDialogStartUs
+                ProjectSessionManager.updatePlayhead(firstDialogStartUs)
+                ProjectSessionManager.setActiveEventId(null)
+            }
+            syncSubtitleWithMpv(forceFreshReAdd = true)
+        }
+    }
+
+    // Audio Waveform: diekstrak secara bertahap di Dispatchers.IO tanpa menahan overlay loading video libmpv
     var waveformData by remember { mutableStateOf<WaveformData?>(null) }
     LaunchedEffect(audioUri, videoUri) {
         val targetMediaUri = audioUri ?: videoUri
         if (targetMediaUri == null) {
             waveformData = null
         } else {
-            ThermalAudioWaveformExtractor.extractFromUri(context, targetMediaUri)
-                .onSuccess { extracted -> waveformData = extracted }
+            ThermalAudioWaveformExtractor.extractFromUri(
+                context = context,
+                mediaUri = targetMediaUri,
+                onPartialWaveform = { partial ->
+                    waveformData = partial
+                },
+            ).onSuccess { extracted ->
+                waveformData = extracted
+                if (sessionState.mediaDurationUs <= 0L) {
+                    ProjectSessionManager.setMediaDuration(extracted.durationUs)
+                }
+            }
         }
     }
-
 
     DisposableEffect(mpvView) {
         mpvView.setPlaybackListener(object : MpvPlaybackListener {
             override fun onTimePosChanged(timeUs: Long) {
                 currentPlayheadUs = timeUs
-                ProjectSessionManager.updatePlayhead(timeUs)
-                val lineAtPlayhead = ActiveSubtitleResolver.findActiveDialogueUs(events, timeUs)
+                val lineAtPlayhead = ProjectSessionManager.updatePlayhead(timeUs)
                 if (lineAtPlayhead != null && activeEventId != lineAtPlayhead.id) {
                     activeEventId = lineAtPlayhead.id
                     ProjectSessionManager.setActiveEventId(lineAtPlayhead.id)
@@ -375,66 +388,128 @@ fun EditorScreen(
             }
 
             override fun onDurationChanged(durationUs: Long) {
-                // Duration sinkron dari mpv
+                ProjectSessionManager.setMediaDuration(durationUs)
+            }
+
+            override fun onMediaLoadingStarted() {
+                ProjectSessionManager.setMediaLoading(
+                    isLoading = true,
+                    progress = 85,
+                    stageMessage = "Menginisialisasi demuxer & merender frame perdana...",
+                )
             }
 
             override fun onMediaLoaded() {
-                syncSubtitleWithMpv()
+                // Tutup overlay loading segera setelah libmpv merender frame video perdana
+                ProjectSessionManager.setMediaLoaded(true)
+                ProjectSessionManager.setMediaLoading(isLoading = false, progress = 100, stageMessage = "")
+                syncSubtitleWithMpv(forceFreshReAdd = true)
             }
         })
         onDispose {
             mpvView.setPlaybackListener(null)
             mpvView.destroy()
+            MpvMediaHelper.closeActiveFileDescriptor()
         }
     }
 
     LaunchedEffect(videoUri, audioUri) {
-        val mediaUri = videoUri ?: audioUri
-        if (mediaUri != null) {
-            val pathOrUri = MpvMediaHelper.resolveUriToPath(context, mediaUri)
-            mpvView.loadMedia(pathOrUri)
+        val vUri = videoUri
+        val aUri = audioUri
+        if (vUri != null) {
+            ProjectSessionManager.setMediaLoaded(false)
+            ProjectSessionManager.setMediaLoading(
+                isLoading = true,
+                progress = 5,
+                stageMessage = "Memeriksa format piksel stream video...",
+            )
+            val resolvedPath = ChromaProxyConverter.resolveOrConvertVideoIfNeeded(
+                context = context,
+                videoUri = vUri,
+                onConversionProgress = { pct, msg ->
+                    ProjectSessionManager.updateLoadingProgress(progress = pct, stageMessage = msg)
+                },
+            )
+            mpvView.loadMedia(resolvedPath)
+        } else if (aUri != null) {
+            ProjectSessionManager.setMediaLoaded(false)
+            ProjectSessionManager.setMediaLoading(
+                isLoading = true,
+                progress = 20,
+                stageMessage = "Membuka trek audio...",
+            )
+            val pathOrUri = MpvMediaHelper.resolveUriToPath(context, aUri)
+            mpvView.loadMedia(pathOrUri, isAudioOnly = true)
+        } else {
+            mpvView.clearLoadedMediaState()
+            MpvMediaHelper.closeActiveFileDescriptor()
+            ProjectSessionManager.setMediaLoaded(false)
+            ProjectSessionManager.setMediaLoading(isLoading = false, progress = 0, stageMessage = "")
         }
     }
 
-    LaunchedEffect(events.size, styles.size, scriptInfo) {
-        syncSubtitleWithMpv()
+    // Debounce 150ms untuk memicu sub-reload ketika contentRevision berubah (hanya jika isMediaLoaded == true)
+    LaunchedEffect(sessionState.contentRevision, videoUri, sessionState.isMediaLoaded) {
+        if (videoUri != null && sessionState.isMediaLoaded && mpvView.isMediaLoaded && sessionState.contentRevision > 0L) {
+            delay(150L)
+            syncSubtitleWithMpv()
+        }
     }
 
-    // On-demand playback loop: 0% CPU usage ketika paused (atau saat zero-state tanpa file media)
-    LaunchedEffect(isPlaying, videoUri, audioUri) {
-        val hasRealMedia = (videoUri != null || audioUri != null)
-        while (isActive && isPlaying && !hasRealMedia) {
-            val maxEventEndUs = events.maxOfOrNull { it.endUs } ?: 0L
-            val maxDurUs = max(
-                waveformData?.durationUs ?: 0L,
-                max(maxEventEndUs + 10L * SubTime.US_PER_SEC, 60L * SubTime.US_PER_SEC),
-            )
-            val nextUs = currentPlayheadUs + 33_000L
-            val nextPlayheadUs = if (nextUs >= maxDurUs) {
-                isPlaying = false
-                0L
-            } else {
-                nextUs
+    // Polling waktu aktual mpvView.timePos setiap 16ms (~60 FPS) selama isPlaying == true.
+    // Saat isMediaLoaded == false (tanpa video/audio), pergerakan playhead berjalan murni di memori Kotlin
+    // menggunakan durasi virtual dari waktu end maksimum daftar event.
+    LaunchedEffect(isPlaying, sessionState.isMediaLoaded, videoUri, audioUri) {
+        val hasLoadedNativeMedia = sessionState.isMediaLoaded && mpvView.isMediaLoaded && (videoUri != null || audioUri != null)
+        if (hasLoadedNativeMedia) {
+            while (isActive && isPlaying) {
+                val posSec = mpvView.pollTimePosSeconds()
+                if (posSec >= 0.0) {
+                    val posUs = (posSec * SubTime.US_PER_SEC).toLong().coerceAtLeast(0L)
+                    currentPlayheadUs = posUs
+                    val lineAtPlayhead = ProjectSessionManager.updatePlayhead(posUs)
+                    if (lineAtPlayhead != null && activeEventId != lineAtPlayhead.id) {
+                        activeEventId = lineAtPlayhead.id
+                        ProjectSessionManager.setActiveEventId(lineAtPlayhead.id)
+                    }
+                }
+                delay(16L)
             }
-            currentPlayheadUs = nextPlayheadUs
-            val lineAtPlayhead = ActiveSubtitleResolver.findActiveDialogueUs(events, nextPlayheadUs)
-            activeEventId = lineAtPlayhead?.id
-            ProjectSessionManager.updatePlayhead(nextPlayheadUs)
-            ProjectSessionManager.setActiveEventId(lineAtPlayhead?.id)
-            delay(33L)
+        } else {
+            while (isActive && isPlaying) {
+                val maxEventEndUs = events.maxOfOrNull { it.endUs } ?: 0L
+                val virtualDurationUs = max(
+                    waveformData?.durationUs ?: 0L,
+                    if (maxEventEndUs > 0L) maxEventEndUs else 60L * SubTime.US_PER_SEC,
+                )
+                val nextUs = currentPlayheadUs + 16_000L
+                val nextPlayheadUs = if (nextUs >= virtualDurationUs) {
+                    isPlaying = false
+                    ProjectSessionManager.updatePlaybackState(false)
+                    0L
+                } else {
+                    nextUs
+                }
+                currentPlayheadUs = nextPlayheadUs
+                val lineAtPlayhead = ActiveSubtitleResolver.findActiveDialogueUs(events, nextPlayheadUs)
+                activeEventId = lineAtPlayhead?.id
+                ProjectSessionManager.updatePlayhead(nextPlayheadUs)
+                ProjectSessionManager.setActiveEventId(lineAtPlayhead?.id)
+                delay(16L)
+            }
         }
     }
 
     fun seekPlayheadTo(newTimeUs: Long, syncSelectionWithPlayhead: Boolean = false) {
         val maxEventEndUs = events.maxOfOrNull { it.endUs } ?: 0L
         val maxDur = max(
-            max(waveformData?.durationUs ?: 0L, maxEventEndUs + 60L * SubTime.US_PER_SEC),
-            3_600L * SubTime.US_PER_SEC,
+            max(sessionState.mediaDurationUs, waveformData?.durationUs ?: 0L),
+            max(maxEventEndUs + 60L * SubTime.US_PER_SEC, 3_600L * SubTime.US_PER_SEC),
         )
         val clampedUs = newTimeUs.coerceIn(0L, maxDur)
         currentPlayheadUs = clampedUs
         ProjectSessionManager.updatePlayhead(clampedUs)
-        if (videoUri != null || audioUri != null) {
+        if (sessionState.isMediaLoaded && mpvView.isMediaLoaded && (videoUri != null || audioUri != null)) {
             mpvView.seekToSeconds(clampedUs.toDouble() / SubTime.US_PER_SEC.toDouble())
         }
         if (syncSelectionWithPlayhead) {
@@ -445,11 +520,12 @@ fun EditorScreen(
     }
 
     fun togglePlayback() {
-        val hasRealMedia = (videoUri != null || audioUri != null)
-        if (hasRealMedia) {
+        if (sessionState.isMediaLoaded && mpvView.isMediaLoaded && (videoUri != null || audioUri != null)) {
             mpvView.togglePlay()
         } else {
-            isPlaying = !isPlaying
+            val nextPlaying = !isPlaying
+            isPlaying = nextPlaying
+            ProjectSessionManager.updatePlaybackState(nextPlaying)
         }
     }
 
@@ -461,10 +537,17 @@ fun EditorScreen(
     var showHelpModal by remember { mutableStateOf(false) }
     var activeColorSelectorTag by remember { mutableStateOf<String?>(null) }
 
-    // Mutasi Baris Dialog
+    // Reset otomatis mode gizmo visual kembali ke Select / Pointer setiap kali selectedEventId == null
+    LaunchedEffect(activeEventId) {
+        if (activeEventId == null && activeTypesetTool != VisualTypesetTool.STANDARD) {
+            activeTypesetTool = VisualTypesetTool.STANDARD
+        }
+    }
+
+    // Mutasi Baris Dialog (Terhubung langsung ke ProjectSessionManager; sub-reload dipicu via debounce 150ms atau langsung)
     fun updateActiveDialogue(
         recordUndo: Boolean = false,
-        syncMpv: Boolean = true,
+        syncMpv: Boolean = false,
         transform: (AssDialogueEvent) -> AssDialogueEvent,
     ) {
         val idx = activeEventIndex
@@ -475,7 +558,7 @@ fun EditorScreen(
             ProjectSessionManager.updateScript { curr ->
                 val list = curr.events.toMutableList()
                 val sIdx = list.indexOfFirst { it.id == updated.id }
-                if (sIdx != -1) list[sIdx] = updated
+                if (sIdx != -1) list[sIdx] = updated else list.add(updated)
                 curr.copy(events = list)
             }
             if (syncMpv) {
@@ -484,48 +567,49 @@ fun EditorScreen(
         }
     }
 
-    fun addNewLineAtPlayhead(initialText: String? = null) {
-        pushUndoSnapshot()
-        val nextId = (events.maxOfOrNull { it.id } ?: 0) + 1
-        val startUs = currentPlayheadUs
-        val endUs = startUs + 2_000_000L
+    fun addNewLineAtPlayhead(
+        initialText: String? = null,
+        initialSelection: TextRange? = null,
+    ): AssDialogueEvent {
         val defaultStyle = styles.firstOrNull()?.name ?: "Default"
-        val newLine = AssDialogueEvent(
-            id = nextId,
-            startUs = startUs,
-            endUs = endUs,
-            isComment = false,
-            style = defaultStyle,
-            actor = "",
-            effect = "",
-            rawText = initialText ?: "",
+        val newLine = ProjectSessionManager.addEvent(
+            initialText = initialText ?: "",
+            startUs = currentPlayheadUs,
+            endUs = currentPlayheadUs + 2_000_000L,
+            styleName = defaultStyle,
         )
-        events.add(newLine)
-        events.sortBy { it.startUs }
-        activeEventId = nextId
-        ProjectSessionManager.updateScript { curr ->
-            curr.copy(events = events.toList())
-        }
-        ProjectSessionManager.setActiveEventId(nextId)
-        textFieldValue = TextFieldValue(newLine.rawText, TextRange(newLine.rawText.length))
+        events.clear()
+        events.addAll(ProjectSessionManager.getCurrentScript().events)
+        // Auto-select baris baru agar inspektor langsung menampilkan LINE #X, START, END, dan durasi
+        activeEventId = newLine.id
+        textFieldValue = TextFieldValue(
+            text = newLine.rawText,
+            selection = initialSelection ?: TextRange(newLine.rawText.length),
+        )
         syncSubtitleWithMpv()
+        return newLine
     }
 
     fun deleteActiveLine() {
-        val idx = activeEventIndex
-        if (idx !in events.indices) return
-        pushUndoSnapshot()
-        events.removeAt(idx)
-        val activeLine = ActiveSubtitleResolver.findActiveDialogueUs(events, currentPlayheadUs)
-        activeEventId = activeLine?.id
-        ProjectSessionManager.updateScript { curr ->
-            curr.copy(events = events.toList())
+        val targetId = activeEventId ?: return
+        val nextActiveId = ProjectSessionManager.deleteEvent(targetId)
+        events.clear()
+        events.addAll(ProjectSessionManager.getCurrentScript().events)
+        activeEventId = nextActiveId
+        if (nextActiveId == null) {
+            activeTypesetTool = VisualTypesetTool.STANDARD
+            textFieldValue = TextFieldValue(text = "", selection = TextRange.Zero)
         }
-        ProjectSessionManager.setActiveEventId(activeLine?.id)
+        // Tulis ulang file sementara .ass secara utuh (termasuk saat daftar Dialogue kosong), flush(), dan panggil sub-reload
         syncSubtitleWithMpv()
     }
 
-    fun insertTokenAtCursor(token: String) {
+    /**
+     * Menyisipkan karakter ganti baris `\N` pada posisi kursor (khusus tombol Enter).
+     * Dilarang digunakan untuk tag formatting atau warna.
+     */
+    fun insertNewlineTokenAtCursor() {
+        val token = "\\N"
         if (activeEventId == null) {
             addNewLineAtPlayhead(token)
             return
@@ -542,6 +626,61 @@ fun EditorScreen(
         updateActiveDialogue(recordUndo = true) { it.copy(rawText = updatedText) }
     }
 
+    /**
+     * Toggle tag format `B` (`\b1`/`\b0`), `I` (`\i1`/`\i0`), `U` (`\u1`/`\u0`), atau `S` (`\s1`/`\s0`)
+     * ke dalam satu blok `{...}` tunggal di awal dialog tanpa menyisipkan di posisi kursor teks.
+     */
+    fun toggleFormatTagOnActiveDialogue(tagKey: String) {
+        val cleanKey = tagKey.trim().removePrefix("{").removeSuffix("}").removePrefix("\\").take(1).lowercase()
+        if (activeEventId == null) {
+            addNewLineAtPlayhead("{\\${cleanKey}1}")
+            return
+        }
+        val currentStyle = styles.find { it.name == activeEvent?.style } ?: styles.firstOrNull() ?: AssStyle()
+        val styleDefault = when (cleanKey) {
+            "b" -> currentStyle.bold
+            "i" -> currentStyle.italic
+            "u" -> currentStyle.underline
+            "s" -> currentStyle.strikeout
+            else -> false
+        }
+        updateActiveDialogue(recordUndo = true, syncMpv = true) { ev ->
+            val updatedText = DialogueTokenizer.toggleFormatTag(
+                rawText = ev.rawText,
+                tagKey = cleanKey,
+                styleDefaultEnabled = styleDefault,
+            )
+            textFieldValue = TextFieldValue(
+                text = updatedText,
+                selection = TextRange(updatedText.length),
+            )
+            ev.copy(rawText = updatedText)
+        }
+    }
+
+    /**
+     * Menimpa tag warna (`\c`, `\2c`, `\3c`, `\4c` beserta alpha) ke dalam satu blok `{...}` tunggal
+     * di awal dialog tanpa menyisipkan di posisi kursor teks.
+     */
+    fun applyColorTagToActiveDialogue(formattedAssTag: String) {
+        if (activeEventId == null) {
+            val initialText = DialogueTokenizer.applyColorOverrideTag("", formattedAssTag)
+            addNewLineAtPlayhead(initialText)
+            return
+        }
+        updateActiveDialogue(recordUndo = true, syncMpv = true) { ev ->
+            val updatedText = DialogueTokenizer.applyColorOverrideTag(
+                rawText = ev.rawText,
+                formattedColorTagBlock = formattedAssTag,
+            )
+            textFieldValue = TextFieldValue(
+                text = updatedText,
+                selection = TextRange(updatedText.length),
+            )
+            ev.copy(rawText = updatedText)
+        }
+    }
+
     BoxWithConstraints(
         modifier = modifier
             .fillMaxSize()
@@ -554,8 +693,8 @@ fun EditorScreen(
         Column(modifier = Modifier.fillMaxSize()) {
             // A. TOP TOOLBAR ([← Back], [↶ Undo], [↷ Redo], [➕ Open Media], [💾 Save .ASS], [? Help])
             EditorTopToolbar(
-                canUndo = undoStack.isNotEmpty(),
-                canRedo = redoStack.isNotEmpty(),
+                canUndo = sessionState.canUndo,
+                canRedo = sessionState.canRedo,
                 onBackClick = onBackToHome,
                 onUndoClick = ::performUndo,
                 onRedoClick = ::performRedo,
@@ -593,12 +732,15 @@ fun EditorScreen(
                                 VideoMonitor16by9(
                                     mpvView = mpvView,
                                     hasVideoUri = videoUri != null,
+                                    isMediaLoading = sessionState.isMediaLoading,
+                                    loadingProgress = sessionState.loadingProgress,
+                                    loadingStageMessage = sessionState.loadingStageMessage,
                                     visibleDialogue = visibleVideoDialogue,
                                     styles = styles,
                                     scriptInfo = scriptInfo,
                                     activeTypesetTool = activeTypesetTool,
                                     onHeadTagsUpdated = { tagUpdates ->
-                                        updateActiveDialogue(recordUndo = true) { ev ->
+                                        updateActiveDialogue(recordUndo = true, syncMpv = true) { ev ->
                                             val updated = DialogueTokenizer.injectOrUpdateHeadTags(
                                                 ev.rawText,
                                                 tagUpdates,
@@ -620,19 +762,20 @@ fun EditorScreen(
                                 onShiftLeadIn = {
                                     if (activeEvent == null) return@QuickActionBar7Buttons
                                     updateActiveDialogue(recordUndo = true) { ev ->
-                                        val nextStart = if (currentPlayheadUs < ev.endUs - 100_000L &&
+                                        val proposedStart = if (currentPlayheadUs <= ev.endUs - TimingConstraints.MIN_DURATION_US &&
                                             kotlin.math.abs(currentPlayheadUs - ev.startUs) > 50_000L
                                         ) {
                                             currentPlayheadUs
                                         } else {
                                             (ev.startUs - 100_000L).coerceAtLeast(0L)
                                         }
+                                        val nextStart = TimingConstraints.clampStartUs(proposedStart, ev.endUs)
                                         ev.copy(startUs = nextStart)
                                     }
                                 },
                                 onNudgePlayheadBackward = {
                                     if (activeEvent == null) return@QuickActionBar7Buttons
-                                    if (videoUri != null || audioUri != null) {
+                                    if (sessionState.isMediaLoaded && mpvView.isMediaLoaded && (videoUri != null || audioUri != null)) {
                                         mpvView.seekRelativeExact(-0.050)
                                     } else {
                                         seekPlayheadTo(currentPlayheadUs - 50_000L)
@@ -641,7 +784,7 @@ fun EditorScreen(
                                 onTogglePlay = ::togglePlayback,
                                 onNudgePlayheadForward = {
                                     if (activeEvent == null) return@QuickActionBar7Buttons
-                                    if (videoUri != null || audioUri != null) {
+                                    if (sessionState.isMediaLoaded && mpvView.isMediaLoaded && (videoUri != null || audioUri != null)) {
                                         mpvView.seekRelativeExact(0.050)
                                     } else {
                                         seekPlayheadTo(currentPlayheadUs + 50_000L)
@@ -649,14 +792,16 @@ fun EditorScreen(
                                 },
                                 onShiftLeadOut = {
                                     if (activeEvent == null) return@QuickActionBar7Buttons
+                                    val effectiveDurUs = max(sessionState.mediaDurationUs, waveformData?.durationUs ?: 0L)
                                     updateActiveDialogue(recordUndo = true) { ev ->
-                                        val nextEnd = if (currentPlayheadUs > ev.startUs + 100_000L &&
+                                        val proposedEnd = if (currentPlayheadUs >= ev.startUs + TimingConstraints.MIN_DURATION_US &&
                                             kotlin.math.abs(currentPlayheadUs - ev.endUs) > 50_000L
                                         ) {
                                             currentPlayheadUs
                                         } else {
-                                            max(ev.startUs + 200_000L, ev.endUs + 100_000L)
+                                            ev.endUs + 100_000L
                                         }
+                                        val nextEnd = TimingConstraints.clampEndUs(ev.startUs, proposedEnd, effectiveDurUs)
                                         ev.copy(endUs = nextEnd)
                                     }
                                 },
@@ -665,7 +810,12 @@ fun EditorScreen(
                                 onOpenScriptProperties = { showPropertiesModal = true },
                                 onOpenStyleManager = { showStyleManagerModal = true },
                                 onDeselectOrAddLine = {
-                                    if (activeEventId != null) activeEventId = null else addNewLineAtPlayhead()
+                                    if (activeEventId != null) {
+                                        activeEventId = null
+                                        ProjectSessionManager.setActiveEventId(null)
+                                    } else {
+                                        addNewLineAtPlayhead()
+                                    }
                                 },
                             )
                         }
@@ -684,7 +834,10 @@ fun EditorScreen(
                                         textFieldValue = finalTfv
                                         if (activeEventId == null) {
                                             if (finalTfv.text.isNotEmpty()) {
-                                                addNewLineAtPlayhead(finalTfv.text)
+                                                addNewLineAtPlayhead(
+                                                    initialText = finalTfv.text,
+                                                    initialSelection = finalTfv.selection,
+                                                )
                                             }
                                         } else {
                                             updateActiveDialogue { it.copy(rawText = finalTfv.text) }
@@ -692,7 +845,7 @@ fun EditorScreen(
                                     },
                                 )
                             },
-                            onInsertEnterNewline = { insertTokenAtCursor("\\N") },
+                            onInsertEnterNewline = ::insertNewlineTokenAtCursor,
                             onCommentChanged = { checked ->
                                 updateActiveDialogue(recordUndo = true) { it.copy(isComment = checked) }
                             },
@@ -706,7 +859,7 @@ fun EditorScreen(
                             onEffectChanged = { effect ->
                                 updateActiveDialogue { it.copy(effect = effect) }
                             },
-                            onQuickTagChipClicked = { tag -> insertTokenAtCursor(tag) },
+                            onQuickTagChipClicked = { tagKey -> toggleFormatTagOnActiveDialogue(tagKey) },
                             onColorTagChipClicked = { colorTagType ->
                                 activeColorSelectorTag = colorTagType
                             },
@@ -724,6 +877,7 @@ fun EditorScreen(
                         activeEventId = activeEventId,
                         currentPlayheadUs = currentPlayheadUs,
                         keyframesUs = keyframesUs,
+                        mediaDurationUs = max(sessionState.mediaDurationUs, waveformData?.durationUs ?: 0L),
                         onPlayheadScrubbed = { scrubbedUs ->
                             seekPlayheadTo(scrubbedUs, syncSelectionWithPlayhead = true)
                         },
@@ -736,7 +890,7 @@ fun EditorScreen(
                             activeEventId = id
                             ProjectSessionManager.setActiveEventId(id)
                             if (id != null) {
-                                events.find { it.id == id }?.let { seekPlayheadTo(it.startUs) }
+                                events.find { it.id == id }?.let { seekPlayheadTo(it.start.microseconds) }
                             }
                         },
                         modifier = Modifier
@@ -753,12 +907,15 @@ fun EditorScreen(
                     VideoMonitor16by9(
                         mpvView = mpvView,
                         hasVideoUri = videoUri != null,
+                        isMediaLoading = sessionState.isMediaLoading,
+                        loadingProgress = sessionState.loadingProgress,
+                        loadingStageMessage = sessionState.loadingStageMessage,
                         visibleDialogue = visibleVideoDialogue,
                         styles = styles,
                         scriptInfo = scriptInfo,
                         activeTypesetTool = activeTypesetTool,
                         onHeadTagsUpdated = { tagUpdates ->
-                            updateActiveDialogue(recordUndo = true) { ev ->
+                            updateActiveDialogue(recordUndo = true, syncMpv = true) { ev ->
                                 val updated = DialogueTokenizer.injectOrUpdateHeadTags(
                                     ev.rawText,
                                     tagUpdates,
@@ -783,19 +940,20 @@ fun EditorScreen(
                         onShiftLeadIn = {
                             if (activeEvent == null) return@QuickActionBar7Buttons
                             updateActiveDialogue(recordUndo = true) { ev ->
-                                val nextStart = if (currentPlayheadUs < ev.endUs - 100_000L &&
+                                val proposedStart = if (currentPlayheadUs <= ev.endUs - TimingConstraints.MIN_DURATION_US &&
                                     kotlin.math.abs(currentPlayheadUs - ev.startUs) > 50_000L
                                 ) {
                                     currentPlayheadUs
                                 } else {
                                     (ev.startUs - 100_000L).coerceAtLeast(0L)
                                 }
+                                val nextStart = TimingConstraints.clampStartUs(proposedStart, ev.endUs)
                                 ev.copy(startUs = nextStart)
                             }
                         },
                         onNudgePlayheadBackward = {
                             if (activeEvent == null) return@QuickActionBar7Buttons
-                            if (videoUri != null || audioUri != null) {
+                            if (sessionState.isMediaLoaded && mpvView.isMediaLoaded && (videoUri != null || audioUri != null)) {
                                 mpvView.seekRelativeExact(-0.050)
                             } else {
                                 seekPlayheadTo(currentPlayheadUs - 50_000L)
@@ -804,7 +962,7 @@ fun EditorScreen(
                         onTogglePlay = ::togglePlayback,
                         onNudgePlayheadForward = {
                             if (activeEvent == null) return@QuickActionBar7Buttons
-                            if (videoUri != null || audioUri != null) {
+                            if (sessionState.isMediaLoaded && mpvView.isMediaLoaded && (videoUri != null || audioUri != null)) {
                                 mpvView.seekRelativeExact(0.050)
                             } else {
                                 seekPlayheadTo(currentPlayheadUs + 50_000L)
@@ -812,14 +970,16 @@ fun EditorScreen(
                         },
                         onShiftLeadOut = {
                             if (activeEvent == null) return@QuickActionBar7Buttons
+                            val effectiveDurUs = max(sessionState.mediaDurationUs, waveformData?.durationUs ?: 0L)
                             updateActiveDialogue(recordUndo = true) { ev ->
-                                val nextEnd = if (currentPlayheadUs > ev.startUs + 100_000L &&
+                                val proposedEnd = if (currentPlayheadUs >= ev.startUs + TimingConstraints.MIN_DURATION_US &&
                                     kotlin.math.abs(currentPlayheadUs - ev.endUs) > 50_000L
                                 ) {
                                     currentPlayheadUs
                                 } else {
-                                    max(ev.startUs + 200_000L, ev.endUs + 100_000L)
+                                    ev.endUs + 100_000L
                                 }
+                                val nextEnd = TimingConstraints.clampEndUs(ev.startUs, proposedEnd, effectiveDurUs)
                                 ev.copy(endUs = nextEnd)
                             }
                         },
@@ -828,7 +988,12 @@ fun EditorScreen(
                         onOpenScriptProperties = { showPropertiesModal = true },
                         onOpenStyleManager = { showStyleManagerModal = true },
                         onDeselectOrAddLine = {
-                            if (activeEventId != null) activeEventId = null else addNewLineAtPlayhead()
+                            if (activeEventId != null) {
+                                activeEventId = null
+                                ProjectSessionManager.setActiveEventId(null)
+                            } else {
+                                addNewLineAtPlayhead()
+                            }
                         },
                     )
 
@@ -846,7 +1011,10 @@ fun EditorScreen(
                                     textFieldValue = finalTfv
                                     if (activeEventId == null) {
                                         if (finalTfv.text.isNotEmpty()) {
-                                            addNewLineAtPlayhead(finalTfv.text)
+                                            addNewLineAtPlayhead(
+                                                initialText = finalTfv.text,
+                                                initialSelection = finalTfv.selection,
+                                            )
                                         }
                                     } else {
                                         updateActiveDialogue { it.copy(rawText = finalTfv.text) }
@@ -854,7 +1022,7 @@ fun EditorScreen(
                                 },
                             )
                         },
-                        onInsertEnterNewline = { insertTokenAtCursor("\\N") },
+                        onInsertEnterNewline = ::insertNewlineTokenAtCursor,
                         onCommentChanged = { checked ->
                             updateActiveDialogue(recordUndo = true) { it.copy(isComment = checked) }
                         },
@@ -868,7 +1036,7 @@ fun EditorScreen(
                         onEffectChanged = { effect ->
                             updateActiveDialogue { it.copy(effect = effect) }
                         },
-                        onQuickTagChipClicked = { tag -> insertTokenAtCursor(tag) },
+                        onQuickTagChipClicked = { tagKey -> toggleFormatTagOnActiveDialogue(tagKey) },
                         onColorTagChipClicked = { colorTagType ->
                             activeColorSelectorTag = colorTagType
                         },
@@ -883,6 +1051,7 @@ fun EditorScreen(
                         activeEventId = activeEventId,
                         currentPlayheadUs = currentPlayheadUs,
                         keyframesUs = keyframesUs,
+                        mediaDurationUs = max(sessionState.mediaDurationUs, waveformData?.durationUs ?: 0L),
                         onPlayheadScrubbed = { scrubbedUs ->
                             seekPlayheadTo(scrubbedUs, syncSelectionWithPlayhead = true)
                         },
@@ -895,7 +1064,7 @@ fun EditorScreen(
                             activeEventId = id
                             ProjectSessionManager.setActiveEventId(id)
                             if (id != null) {
-                                events.find { it.id == id }?.let { seekPlayheadTo(it.startUs) }
+                                events.find { it.id == id }?.let { seekPlayheadTo(it.start.microseconds) }
                             }
                         },
                         modifier = Modifier
@@ -941,7 +1110,7 @@ fun EditorScreen(
             onDismiss = { activeColorSelectorTag = null },
             onApplyColorTag = { formattedAssTag ->
                 activeColorSelectorTag = null
-                insertTokenAtCursor(formattedAssTag)
+                applyColorTagToActiveDialogue(formattedAssTag)
             },
         )
     }
@@ -1202,6 +1371,9 @@ private fun MediaDropdownRow(
 private fun VideoMonitor16by9(
     mpvView: SubEditMpvView,
     hasVideoUri: Boolean,
+    isMediaLoading: Boolean = false,
+    loadingProgress: Int = 0,
+    loadingStageMessage: String = "",
     visibleDialogue: AssDialogueEvent?,
     styles: List<AssStyle>,
     scriptInfo: AssScriptInfo,
@@ -1228,132 +1400,195 @@ private fun VideoMonitor16by9(
         }
     }
 
-    // Live interactive transform state during drag
-    var livePosX by remember(baseTransform) { mutableFloatStateOf(baseTransform.posX) }
-    var livePosY by remember(baseTransform) { mutableFloatStateOf(baseTransform.posY) }
-    var liveFrz by remember(baseTransform) { mutableFloatStateOf(baseTransform.frz) }
-    var liveFrx by remember(baseTransform) { mutableFloatStateOf(baseTransform.frx) }
-    var liveFry by remember(baseTransform) { mutableFloatStateOf(baseTransform.fry) }
-    var liveFscx by remember(baseTransform) { mutableFloatStateOf(baseTransform.fscx) }
-    var liveFscy by remember(baseTransform) { mutableFloatStateOf(baseTransform.fscy) }
-    var clipDragBox by remember(baseTransform) { mutableStateOf(baseTransform.clipRect) }
+    // Live interactive transform state during drag (60 FPS local UI state, stable references)
+    var isGizmoDragging by remember { mutableStateOf(false) }
+    var livePosX by remember { mutableFloatStateOf(baseTransform.posX) }
+    var livePosY by remember { mutableFloatStateOf(baseTransform.posY) }
+    var liveFrz by remember { mutableFloatStateOf(baseTransform.frz) }
+    var liveFrx by remember { mutableFloatStateOf(baseTransform.frx) }
+    var liveFry by remember { mutableFloatStateOf(baseTransform.fry) }
+    var liveFscx by remember { mutableFloatStateOf(baseTransform.fscx) }
+    var liveFscy by remember { mutableFloatStateOf(baseTransform.fscy) }
+
+    LaunchedEffect(baseTransform, isGizmoDragging) {
+        if (!isGizmoDragging) {
+            livePosX = baseTransform.posX
+            livePosY = baseTransform.posY
+            liveFrz = baseTransform.frz
+            liveFrx = baseTransform.frx
+            liveFry = baseTransform.fry
+            liveFscx = baseTransform.fscx
+            liveFscy = baseTransform.fscy
+        }
+    }
+
+    var previewBoxWidthPx by remember { mutableIntStateOf(0) }
+    var previewBoxHeightPx by remember { mutableIntStateOf(0) }
+
+    // Pastikan sub-visibility selalu dikembalikan ke yes jika composable keluar saat sedang drag
+    DisposableEffect(mpvView) {
+        onDispose {
+            mpvView.setSubtitleVisibility(true)
+        }
+    }
+
+    // Watchdog pengaman pada VideoMonitor16by9:
+    // Jika timePos > 0 atau estimated-vf-fps > 0 (atau maksimal 2,5 detik setelah file-loaded),
+    // otomatis ubah isMediaLoading = false dan segarkan siklus render SurfaceView.
+    LaunchedEffect(hasVideoUri, isMediaLoading) {
+        if (!hasVideoUri || !isMediaLoading) return@LaunchedEffect
+        var fileLoadedTimestampMs = 0L
+        while (isActive && ProjectSessionManager.sessionState.value.isMediaLoading) {
+            if (mpvView.isMediaLoaded && fileLoadedTimestampMs == 0L) {
+                fileLoadedTimestampMs = System.currentTimeMillis()
+            }
+            val metricReady = mpvView.isFirstFrameMetricReady()
+            val timeoutReached = fileLoadedTimestampMs > 0L &&
+                (System.currentTimeMillis() - fileLoadedTimestampMs) >= 2_500L
+            if (metricReady || timeoutReached) {
+                mpvView.requestLayout()
+                mpvView.invalidate()
+                ProjectSessionManager.setMediaLoaded(true)
+                ProjectSessionManager.setMediaLoading(
+                    isLoading = false,
+                    progress = 100,
+                    stageMessage = "",
+                )
+                break
+            }
+            delay(100L)
+        }
+    }
 
     val latestTool by rememberUpdatedState(activeTypesetTool)
     val latestScriptInfo by rememberUpdatedState(scriptInfo)
+    val latestVisibleDialogue by rememberUpdatedState(visibleDialogue)
+    val latestResolvedStyle by rememberUpdatedState(resolvedStyle)
     val latestOnHeadTagsUpdated by rememberUpdatedState(onHeadTagsUpdated)
 
     BoxWithConstraints(
         modifier = modifier
+            .clipToBounds()
             .background(Color.Black)
             .pointerInput(visibleDialogue?.id, activeTypesetTool) {
                 if (activeTypesetTool == VisualTypesetTool.STANDARD || visibleDialogue == null) {
                     return@pointerInput
                 }
+                val touchSlop = viewConfiguration.touchSlop
                 var startTouchX = 0f
                 var startTouchY = 0f
-                var initPosX = livePosX
-                var initPosY = livePosY
-                var initFrz = liveFrz
-                var initFrx = liveFrx
-                var initFry = liveFry
-                var initFscx = liveFscx
-                var initFscy = liveFscy
+                var startX = livePosX
+                var startY = livePosY
+                var startFrz = liveFrz
+                var startFrx = liveFrx
+                var startFry = liveFry
+                var startScaleX = liveFscx
+                var startScaleY = liveFscy
                 var hasDragged = false
 
                 detectDragGestures(
                     onDragStart = { startOffset ->
+                        val curDialogue = latestVisibleDialogue ?: return@detectDragGestures
+                        val curInfo = latestScriptInfo
+                        val parsedCurrent = DialogueTokenizer.parseVisualTransform(
+                            rawText = curDialogue.rawText,
+                            style = latestResolvedStyle,
+                            playResX = curInfo.playResX,
+                            playResY = curInfo.playResY,
+                        )
                         startTouchX = startOffset.x
                         startTouchY = startOffset.y
-                        initPosX = livePosX
-                        initPosY = livePosY
-                        initFrz = liveFrz
-                        initFrx = liveFrx
-                        initFry = liveFry
-                        initFscx = liveFscx
-                        initFscy = liveFscy
+                        startX = parsedCurrent.posX
+                        startY = parsedCurrent.posY
+                        startFrz = parsedCurrent.frz
+                        startFrx = parsedCurrent.frx
+                        startFry = parsedCurrent.fry
+                        startScaleX = parsedCurrent.fscx
+                        startScaleY = parsedCurrent.fscy
+
+                        livePosX = startX
+                        livePosY = startY
+                        liveFrz = startFrz
+                        liveFrx = startFrx
+                        liveFry = startFry
+                        liveFscx = startScaleX
+                        liveFscy = startScaleY
                         hasDragged = false
+
+                        // Tahap 1 (onDragStart): Sembunyikan track libass sementara & tampilkan gizmo pratinjau Compose
+                        isGizmoDragging = true
+                        mpvView.setSubtitleVisibility(false)
                     },
                     onDrag = { change, _ ->
                         change.consume()
-                        val boxW = size.width.toFloat().coerceAtLeast(1f)
-                        val boxH = size.height.toFloat().coerceAtLeast(1f)
-                        val dx = change.position.x - startTouchX
-                        val dy = change.position.y - startTouchY
-                        if (kotlin.math.abs(dx) > 1.5f || kotlin.math.abs(dy) > 1.5f) {
+                        val monitorWidth = size.width.toFloat().coerceAtLeast(1f)
+                        val monitorHeight = size.height.toFloat().coerceAtLeast(1f)
+                        val dragDeltaX = change.position.x - startTouchX
+                        val dragDeltaY = change.position.y - startTouchY
+                        if (!hasDragged && hypot(dragDeltaX, dragDeltaY) > touchSlop) {
                             hasDragged = true
                         }
                         if (!hasDragged) return@detectDragGestures
 
-                        val resX = latestScriptInfo.playResX.toFloat()
-                        val resY = latestScriptInfo.playResY.toFloat()
+                        val playResX = latestScriptInfo.playResX.toFloat().coerceAtLeast(1f)
+                        val playResY = latestScriptInfo.playResY.toFloat().coerceAtLeast(1f)
 
+                        // Tahap 2 (onDrag): Perbarui hanya variabel state UI lokal di memori secara proporsional (60 FPS)
                         when (latestTool) {
                             VisualTypesetTool.POS -> {
-                                val deltaAssX = (dx / boxW) * resX
-                                val deltaAssY = (dy / boxH) * resY
-                                livePosX = (initPosX + deltaAssX).coerceIn(0f, resX)
-                                livePosY = (initPosY + deltaAssY).coerceIn(0f, resY)
+                                livePosX = (startX + dragDeltaX * (playResX / monitorWidth)).coerceIn(0f, playResX)
+                                livePosY = (startY + dragDeltaY * (playResY / monitorHeight)).coerceIn(0f, playResY)
                             }
                             VisualTypesetTool.ROTATE_Z -> {
-                                val centerPxX = (livePosX / resX) * boxW
-                                val centerPxY = (livePosY / resY) * boxH
+                                val centerPxX = (livePosX / playResX) * monitorWidth
+                                val centerPxY = (livePosY / playResY) * monitorHeight
                                 val startAngle = atan2(startTouchY - centerPxY, startTouchX - centerPxX)
                                 val curAngle = atan2(change.position.y - centerPxY, change.position.x - centerPxX)
                                 val degDelta = -Math.toDegrees((curAngle - startAngle).toDouble()).toFloat()
-                                liveFrz = ((initFrz + degDelta + 540f) % 360f) - 180f
+                                liveFrz = ((startFrz + degDelta + 540f) % 360f) - 180f
                             }
                             VisualTypesetTool.ROTATE_XY -> {
-                                liveFry = (initFry + dx * 0.8f).coerceIn(-180f, 180f)
-                                liveFrx = (initFrx - dy * 0.8f).coerceIn(-180f, 180f)
+                                liveFrx = (startFrx + (-dragDeltaY / monitorHeight) * 180f).coerceIn(-85f, 85f)
+                                liveFry = (startFry + (dragDeltaX / monitorWidth) * 180f).coerceIn(-85f, 85f)
                             }
                             VisualTypesetTool.SCALE -> {
-                                liveFscx = (initFscx + dx * 0.7f).coerceIn(20f, 350f)
-                                liveFscy = (initFscy - dy * 0.7f).coerceIn(20f, 350f)
-                            }
-                            VisualTypesetTool.CLIP -> {
-                                val x1 = ((min(startTouchX, change.position.x) / boxW) * resX)
-                                    .roundToInt().coerceIn(0, resX.toInt())
-                                val y1 = ((min(startTouchY, change.position.y) / boxH) * resY)
-                                    .roundToInt().coerceIn(0, resY.toInt())
-                                val x2 = ((max(startTouchX, change.position.x) / boxW) * resX)
-                                    .roundToInt().coerceIn(0, resX.toInt())
-                                val y2 = ((max(startTouchY, change.position.y) / boxH) * resY)
-                                    .roundToInt().coerceIn(0, resY.toInt())
-                                clipDragBox = intArrayOf(x1, y1, x2, y2)
+                                liveFscx = (startScaleX + (dragDeltaX / monitorWidth) * 150f).coerceIn(10f, 500f)
+                                liveFscy = (startScaleY + (-dragDeltaY / monitorHeight) * 150f).coerceIn(10f, 500f)
                             }
                             VisualTypesetTool.STANDARD -> Unit
                         }
                     },
                     onDragEnd = {
-                        if (!hasDragged) return@detectDragGestures
-                        val updates = when (latestTool) {
-                            VisualTypesetTool.POS -> mapOf(
-                                "pos" to "\\pos(${livePosX.roundToInt()},${livePosY.roundToInt()})"
-                            )
-                            VisualTypesetTool.ROTATE_Z -> mapOf(
-                                "frz" to "\\frz${liveFrz.roundToInt()}"
-                            )
-                            VisualTypesetTool.ROTATE_XY -> mapOf(
-                                "frx" to "\\frx${liveFrx.roundToInt()}",
-                                "fry" to "\\fry${liveFry.roundToInt()}",
-                            )
-                            VisualTypesetTool.SCALE -> mapOf(
-                                "fscx" to "\\fscx${liveFscx.roundToInt()}",
-                                "fscy" to "\\fscy${liveFscy.roundToInt()}",
-                            )
-                            VisualTypesetTool.CLIP -> {
-                                val c = clipDragBox
-                                if (c != null && c.size == 4) {
-                                    mapOf("clip" to "\\clip(${c[0]},${c[1]},${c[2]},${c[3]})")
-                                } else {
-                                    emptyMap()
-                                }
+                        // Tahap 3 (onDragEnd): Simpan nilai akhir satu kali ke ProjectSessionManager (1 riwayat Undo),
+                        // tulis & flush() file sementara .ass ke disk, panggil sub-reload, dan kembalikan sub-visibility=yes
+                        if (hasDragged) {
+                            val updates = when (latestTool) {
+                                VisualTypesetTool.POS -> mapOf(
+                                    "pos" to "\\pos(${livePosX.roundToInt()},${livePosY.roundToInt()})"
+                                )
+                                VisualTypesetTool.ROTATE_Z -> mapOf(
+                                    "frz" to "\\frz${liveFrz.roundToInt()}"
+                                )
+                                VisualTypesetTool.ROTATE_XY -> mapOf(
+                                    "frx" to "\\frx${liveFrx.roundToInt()}",
+                                    "fry" to "\\fry${liveFry.roundToInt()}",
+                                )
+                                VisualTypesetTool.SCALE -> mapOf(
+                                    "fscx" to "\\fscx${liveFscx.roundToInt()}",
+                                    "fscy" to "\\fscy${liveFscy.roundToInt()}",
+                                )
+                                VisualTypesetTool.STANDARD -> emptyMap()
                             }
-                            VisualTypesetTool.STANDARD -> emptyMap()
+                            if (updates.isNotEmpty()) {
+                                latestOnHeadTagsUpdated(updates)
+                            }
                         }
-                        if (updates.isNotEmpty()) {
-                            latestOnHeadTagsUpdated(updates)
-                        }
+                        isGizmoDragging = false
+                        mpvView.setSubtitleVisibility(true)
+                    },
+                    onDragCancel = {
+                        isGizmoDragging = false
+                        mpvView.setSubtitleVisibility(true)
                     },
                 )
             }
@@ -1372,8 +1607,62 @@ private fun VideoMonitor16by9(
                         )
                     }
                 },
+                update = { view ->
+                    view.requestLayout()
+                    view.invalidate()
+                },
                 modifier = Modifier.fillMaxSize(),
             )
+
+            // Indikator loading bertahap (0%-100%) ditahan hingga libmpv merender frame perdana ke GPU
+            if (isMediaLoading) {
+                val clampedPct = loadingProgress.coerceIn(0, 100)
+                val statusLabel = loadingStageMessage.ifBlank {
+                    when {
+                        clampedPct < 20 -> "Membuka file descriptor (fd://) & menginisialisasi dekoder..."
+                        clampedPct < 85 -> "Mengekstrak puncak gelombang audio PCM ($clampedPct%)..."
+                        else -> "Mendekode & mengunggah frame perdana ke permukaan GPU..."
+                    }
+                }
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color(0xC8090D16)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(BgCard.copy(alpha = 0.94f))
+                            .border(1.dp, BorderHighlight, RoundedCornerShape(10.dp))
+                            .padding(horizontal = 20.dp, vertical = 14.dp),
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator(
+                                color = AccentCyan,
+                                strokeWidth = 2.5.dp,
+                                modifier = Modifier.size(38.dp),
+                            )
+                            Text(
+                                text = "$clampedPct%",
+                                color = AccentCyan,
+                                fontSize = 9.sp,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.ExtraBold,
+                            )
+                        }
+                        Text(
+                            text = statusLabel,
+                            color = TextMain,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            textAlign = TextAlign.Center,
+                        )
+                    }
+                }
+            }
         } else {
             // Latar pola checkerboard abu-abu transparan (indikator belum ada media video)
             Box(
@@ -1418,21 +1707,13 @@ private fun VideoMonitor16by9(
             }
         }
 
-        // Indikator Mode & Koordinat Live di Pojok Kiri Atas Video Monitor
-        if (activeTypesetTool != VisualTypesetTool.STANDARD) {
+        // Indikator Mode & Koordinat Live di Pojok Kiri Atas Video Monitor (Sembunyikan saat selectedEventId / visibleDialogue == null)
+        if (activeTypesetTool != VisualTypesetTool.STANDARD && visibleDialogue != null) {
             val pillText = when (activeTypesetTool) {
                 VisualTypesetTool.POS -> "✥ POS: (${livePosX.roundToInt()}, ${livePosY.roundToInt()})"
-                VisualTypesetTool.ROTATE_Z -> "🔄 ROT Z: ${liveFrz.roundToInt()}°"
-                VisualTypesetTool.ROTATE_XY -> "📐 ROT X:${liveFrx.roundToInt()}° Y:${liveFry.roundToInt()}°"
+                VisualTypesetTool.ROTATE_Z -> "🔄 ROT 2D: ${liveFrz.roundToInt()}°"
+                VisualTypesetTool.ROTATE_XY -> "📐 3D: X:${liveFrx.roundToInt()}° Y:${liveFry.roundToInt()}°"
                 VisualTypesetTool.SCALE -> "⤢ SCALE: ${liveFscx.roundToInt()}% × ${liveFscy.roundToInt()}%"
-                VisualTypesetTool.CLIP -> {
-                    val c = clipDragBox
-                    if (c != null && c.size == 4) {
-                        "✂️ CLIP: (${c[0]},${c[1]},${c[2]},${c[3]})"
-                    } else {
-                        "✂️ CLIP: Geser pada subtitle"
-                    }
-                }
                 VisualTypesetTool.STANDARD -> ""
             }
             Box(
@@ -1454,178 +1735,163 @@ private fun VideoMonitor16by9(
             }
         }
 
-        // Rendering Teks Subtitle:
-        // Jika ada video (hasVideoUri == true), libass di libmpv merender subtitle secara native pada frame video.
-        // Compose hanya merender overlay teks ketika:
-        // 1. Belum ada media video (!hasVideoUri) -> mode background checkerboard
-        // 2. Mode typesetting interaktif aktif (isTypesetInteractive) -> menampilkan bounding box & drag anchor
-        if (visibleDialogue != null && !visibleDialogue.isComment) {
-            val isTypesetInteractive = activeTypesetTool != VisualTypesetTool.STANDARD
-            if (!hasVideoUri || isTypesetInteractive) {
-                val formattedText = remember(visibleDialogue.rawText) {
-                    DialogueTokenizer.formatForVideoDisplay(visibleDialogue.rawText)
+        // Rendering Teks Pratinjau Compose (Anti-Ghosting):
+        // Sembunyikan overlay teks Compose sepenuhnya saat pengguna TIDAK sedang menyeret gizmo (`isGizmoDragging`).
+        // Selama proses drag (`isGizmoDragging == true`), track libass disembunyikan (`sub-visibility=no`)
+        // dan overlay pratinjau Compose ditampilkan pada 60 FPS dengan skala PlayResX & jangkar \an1-9.
+        if (visibleDialogue != null && !visibleDialogue.isComment && isGizmoDragging) {
+            val formattedText = remember(visibleDialogue.rawText) {
+                DialogueTokenizer.formatForVideoDisplay(visibleDialogue.rawText)
+            }
+            if (formattedText.isNotEmpty()) {
+                val headTagMap = remember(visibleDialogue.rawText) {
+                    DialogueTokenizer.parseHeadTagMap(visibleDialogue.rawText)
                 }
-                if (formattedText.isNotEmpty()) {
-                    val rawText = visibleDialogue.rawText
-                    val isBold = resolvedStyle.bold || rawText.contains("\\b1")
-                    val isItalic = resolvedStyle.italic || rawText.contains("\\i1")
-                    val isUnder = resolvedStyle.underline || rawText.contains("\\u1")
-                    val isStrike = resolvedStyle.strikeout || rawText.contains("\\s1")
+                val isBold = when (headTagMap["b"]) {
+                    "\\b1" -> true
+                    "\\b0" -> false
+                    else -> resolvedStyle.bold
+                }
+                val isItalic = when (headTagMap["i"]) {
+                    "\\i1" -> true
+                    "\\i0" -> false
+                    else -> resolvedStyle.italic
+                }
+                val isUnder = when (headTagMap["u"]) {
+                    "\\u1" -> true
+                    "\\u0" -> false
+                    else -> resolvedStyle.underline
+                }
+                val isStrike = when (headTagMap["s"]) {
+                    "\\s1" -> true
+                    "\\s0" -> false
+                    else -> resolvedStyle.strikeout
+                }
 
-                    val decorations = buildList {
-                        if (isUnder) add(TextDecoration.Underline)
-                        if (isStrike) add(TextDecoration.LineThrough)
-                    }
-                    val textDecoration = if (decorations.isEmpty()) {
-                        TextDecoration.None
-                    } else {
-                        TextDecoration.combine(decorations)
-                    }
+                val decorations = buildList {
+                    if (isUnder) add(TextDecoration.Underline)
+                    if (isStrike) add(TextDecoration.LineThrough)
+                }
+                val textDecoration = if (decorations.isEmpty()) {
+                    TextDecoration.None
+                } else {
+                    TextDecoration.combine(decorations)
+                }
 
-                    val scaleRatio = boxHeightPx / scriptInfo.playResY.toFloat().coerceAtLeast(1f)
-                    val density = LocalDensity.current
-                    val scaledFontSp = with(density) {
-                        ((resolvedStyle.fontsize * scaleRatio * 1.45f).coerceIn(12f, 34f)).toSp()
-                    }
+                // Skala ukuran font dan kotak gizmo berdasarkan faktor monitorWidth / playResX
+                val scaleFactor = boxWidthPx / scriptInfo.playResX.toFloat().coerceAtLeast(1f)
+                val density = LocalDensity.current
+                val scaledFontSp = with(density) {
+                    (resolvedStyle.fontsize * scaleFactor).coerceIn(9f, 52f).toSp()
+                }
 
-                    val targetScreenX = (livePosX / scriptInfo.playResX.toFloat()) * boxWidthPx
-                    val targetScreenY = (livePosY / scriptInfo.playResY.toFloat()) * boxHeightPx
+                // Titik jangkar perataan numpad \an 1 sampai 9 (default \an2)
+                val alignmentAn = baseTransform.alignment.coerceIn(1, 9)
+                val anchorFracX = when (alignmentAn) {
+                    1, 4, 7 -> 0f
+                    2, 5, 8 -> 0.5f
+                    else -> 1f
+                }
+                val anchorFracY = when (alignmentAn) {
+                    7, 8, 9 -> 0f
+                    4, 5, 6 -> 0.5f
+                    else -> 1f
+                }
 
-                    Box(
-                        modifier = Modifier
-                            .align(
-                                if (baseTransform.hasCustomPos || isTypesetInteractive) {
-                                    Alignment.TopStart
-                                } else {
-                                    when (resolvedStyle.alignment) {
-                                        1 -> Alignment.BottomStart
-                                        2 -> Alignment.BottomCenter
-                                        3 -> Alignment.BottomEnd
-                                        4 -> Alignment.CenterStart
-                                        5 -> Alignment.Center
-                                        6 -> Alignment.CenterEnd
-                                        7 -> Alignment.TopStart
-                                        8 -> Alignment.TopCenter
-                                        else -> Alignment.TopEnd
-                                    }
-                                }
-                            )
-                            .let { mod ->
-                                if (baseTransform.hasCustomPos || isTypesetInteractive) {
-                                    mod.offset {
-                                        IntOffset(
-                                            x = (targetScreenX - (boxWidthPx * 0.28f)).roundToInt()
-                                                .coerceIn(4, (boxWidthPx * 0.7f).roundToInt().coerceAtLeast(8)),
-                                            y = (targetScreenY - 22f).roundToInt()
-                                                .coerceIn(4, (boxHeightPx - 36f).roundToInt().coerceAtLeast(8)),
-                                        )
-                                    }
-                                } else {
-                                    mod.padding(horizontal = 16.dp, vertical = 12.dp)
-                                }
-                            }
-                            .graphicsLayer {
-                                rotationZ = -liveFrz
-                                rotationX = liveFrx
-                                rotationY = liveFry
-                                scaleX = (liveFscx / 100f).coerceIn(0.2f, 3.5f)
-                                scaleY = (liveFscy / 100f).coerceIn(0.2f, 3.5f)
-                            }
-                            .let { mod ->
-                                if (isTypesetInteractive) {
-                                    val gizmoBorderColor = if (activeTypesetTool == VisualTypesetTool.CLIP) {
-                                        AccentCoral
-                                    } else {
-                                        AccentCyan
-                                    }
-                                    mod
-                                        .background(Color(0x380F172A), RoundedCornerShape(3.dp))
-                                        .drawBehind {
-                                            drawRoundRect(
-                                                color = gizmoBorderColor,
-                                                style = Stroke(
-                                                    width = 1.5.dp.toPx(),
-                                                    pathEffect = PathEffect.dashPathEffect(floatArrayOf(8f, 6f), 0f),
-                                                ),
-                                            )
-                                            if (activeTypesetTool == VisualTypesetTool.ROTATE_Z ||
-                                                activeTypesetTool == VisualTypesetTool.ROTATE_XY
-                                            ) {
-                                                drawCircle(
-                                                    color = AccentPurple,
-                                                    radius = 28.dp.toPx(),
-                                                    style = Stroke(
-                                                        width = 1.5.dp.toPx(),
-                                                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(6f, 6f), 0f),
-                                                    ),
-                                                )
-                                            }
-                                        }
-                                        .padding(horizontal = 8.dp, vertical = 4.dp)
-                                } else {
-                                    mod.padding(horizontal = 6.dp, vertical = 2.dp)
-                                }
-                            },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        val fontWeight = if (isBold) FontWeight.ExtraBold else FontWeight.Bold
-                        val fontStyle = if (isItalic) FontStyle.Italic else FontStyle.Normal
-                        val textAlign = when (resolvedStyle.alignment) {
-                            1, 4, 7 -> TextAlign.Left
-                            3, 6, 9 -> TextAlign.Right
-                            else -> TextAlign.Center
+                val targetScreenX = (livePosX / scriptInfo.playResX.toFloat().coerceAtLeast(1f)) * boxWidthPx
+                val targetScreenY = (livePosY / scriptInfo.playResY.toFloat().coerceAtLeast(1f)) * boxHeightPx
+
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .onSizeChanged {
+                            previewBoxWidthPx = it.width
+                            previewBoxHeightPx = it.height
                         }
-
-                        // Jika !hasVideoUri (mode checkerboard), tampilkan teks solid penuh.
-                        // Jika hasVideoUri (video sedang diputar) dan sedang typesetting drag, tampilkan semi-transparan.
-                        val textAlpha = if (hasVideoUri) 0.65f else 1f
-
-                        // Layer 1: Outline hitam pekat (Libass Standard)
-                        Text(
-                            text = formattedText,
-                            style = TextStyle(
-                                color = resolvedStyle.outlineComposeColor.copy(alpha = textAlpha),
-                                fontSize = scaledFontSp,
-                                fontFamily = assetFontFamily,
-                                fontWeight = fontWeight,
-                                fontStyle = fontStyle,
-                                textAlign = textAlign,
-                                lineHeight = scaledFontSp * 1.25f,
-                                drawStyle = Stroke(width = (resolvedStyle.outline * 2.2f).coerceAtLeast(3f)),
-                            ),
-                        )
-
-                        // Layer 2: Fill Primary + Shadow
-                        Text(
-                            text = formattedText,
-                            style = TextStyle(
-                                color = resolvedStyle.primaryComposeColor.copy(alpha = textAlpha),
-                                fontSize = scaledFontSp,
-                                fontFamily = assetFontFamily,
-                                fontWeight = fontWeight,
-                                fontStyle = fontStyle,
-                                textDecoration = textDecoration,
-                                textAlign = textAlign,
-                                lineHeight = scaledFontSp * 1.25f,
-                                shadow = Shadow(
-                                    color = resolvedStyle.shadowComposeColor.copy(alpha = textAlpha),
-                                    offset = Offset(2f, 2f),
-                                    blurRadius = 2f,
+                        .offset {
+                            IntOffset(
+                                x = (targetScreenX - previewBoxWidthPx * anchorFracX).roundToInt(),
+                                y = (targetScreenY - previewBoxHeightPx * anchorFracY).roundToInt(),
+                            )
+                        }
+                        .graphicsLayer {
+                            transformOrigin = TransformOrigin(anchorFracX, anchorFracY)
+                            rotationZ = -liveFrz
+                            rotationX = liveFrx
+                            rotationY = liveFry
+                            scaleX = (liveFscx / 100f).coerceIn(0.1f, 5.0f)
+                            scaleY = (liveFscy / 100f).coerceIn(0.1f, 5.0f)
+                        }
+                        .background(Color(0x380F172A), RoundedCornerShape(3.dp))
+                        .drawBehind {
+                            drawRoundRect(
+                                color = AccentCyan,
+                                style = Stroke(
+                                    width = 1.5.dp.toPx(),
+                                    pathEffect = PathEffect.dashPathEffect(floatArrayOf(8f, 6f), 0f),
                                 ),
-                            ),
-                        )
-
-                        // Titik Anchor Tengah (\an2 / \pos) saat mode typesetting aktif
-                        if (isTypesetInteractive) {
-                            Box(
-                                modifier = Modifier
-                                    .size(8.dp)
-                                    .clip(CircleShape)
-                                    .background(AccentCoral.copy(alpha = 0.55f))
-                                    .border(1.5.dp, AccentCoral, CircleShape),
                             )
+                            if (activeTypesetTool == VisualTypesetTool.ROTATE_Z ||
+                                activeTypesetTool == VisualTypesetTool.ROTATE_XY
+                            ) {
+                                drawCircle(
+                                    color = AccentPurple,
+                                    radius = 28.dp.toPx(),
+                                    style = Stroke(
+                                        width = 1.5.dp.toPx(),
+                                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(6f, 6f), 0f),
+                                    ),
+                                )
+                            }
                         }
+                        .padding(horizontal = (6f * scaleFactor).dp, vertical = (3f * scaleFactor).dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    val fontWeight = if (isBold) FontWeight.ExtraBold else FontWeight.Bold
+                    val fontStyle = if (isItalic) FontStyle.Italic else FontStyle.Normal
+                    val textAlign = when (alignmentAn) {
+                        1, 4, 7 -> TextAlign.Left
+                        3, 6, 9 -> TextAlign.Right
+                        else -> TextAlign.Center
                     }
+
+                    val textAlpha = 0.9f
+                    val scaledOutlineWidth = (resolvedStyle.outline * scaleFactor * 2f).coerceAtLeast(2f)
+
+                    // Layer 1: Outline hitam pekat (Libass Standard)
+                    Text(
+                        text = formattedText,
+                        style = TextStyle(
+                            color = resolvedStyle.outlineComposeColor.copy(alpha = textAlpha),
+                            fontSize = scaledFontSp,
+                            fontFamily = assetFontFamily,
+                            fontWeight = fontWeight,
+                            fontStyle = fontStyle,
+                            textAlign = textAlign,
+                            lineHeight = scaledFontSp * 1.2f,
+                            drawStyle = Stroke(width = scaledOutlineWidth),
+                        ),
+                    )
+
+                    // Layer 2: Fill Primary + Shadow
+                    Text(
+                        text = formattedText,
+                        style = TextStyle(
+                            color = resolvedStyle.primaryComposeColor.copy(alpha = textAlpha),
+                            fontSize = scaledFontSp,
+                            fontFamily = assetFontFamily,
+                            fontWeight = fontWeight,
+                            fontStyle = fontStyle,
+                            textDecoration = textDecoration,
+                            textAlign = textAlign,
+                            lineHeight = scaledFontSp * 1.2f,
+                            shadow = Shadow(
+                                color = resolvedStyle.shadowComposeColor.copy(alpha = textAlpha),
+                                offset = Offset(2f * scaleFactor, 2f * scaleFactor),
+                                blurRadius = 2f * scaleFactor,
+                            ),
+                        ),
+                    )
                 }
             }
         }
@@ -2000,6 +2266,7 @@ private fun AssInspectorPanel(
                     expanded = styleDropdownExpanded,
                     onDismissRequest = { styleDropdownExpanded = false },
                     modifier = Modifier
+                        .heightIn(max = 320.dp)
                         .background(BgCard)
                         .border(1.dp, BorderHighlight, RoundedCornerShape(8.dp)),
                 ) {
@@ -2084,7 +2351,33 @@ private fun AssInspectorPanel(
             }
         }
 
-        // 3. Toolbar Chip Tag ASS Cepat (Rata Tengah): B, I, U, S, \c, \2c, \3c, \4c
+        // 3. Toolbar Chip Tag ASS Cepat (Rata Tengah): B, I, U, S (Toggle 1/0), \c, \2c, \3c, \4c
+        val headTagMap = remember(textFieldValue.text) {
+            DialogueTokenizer.parseHeadTagMap(textFieldValue.text)
+        }
+        val activeStyleObj = remember(activeEvent?.style, styles) {
+            styles.find { it.name == activeEvent?.style } ?: styles.firstOrNull() ?: AssStyle()
+        }
+        val isBoldActive = when (headTagMap["b"]) {
+            "\\b1" -> true
+            "\\b0" -> false
+            else -> activeStyleObj.bold
+        }
+        val isItalicActive = when (headTagMap["i"]) {
+            "\\i1" -> true
+            "\\i0" -> false
+            else -> activeStyleObj.italic
+        }
+        val isUnderlineActive = when (headTagMap["u"]) {
+            "\\u1" -> true
+            "\\u0" -> false
+            else -> activeStyleObj.underline
+        }
+        val isStrikeoutActive = when (headTagMap["s"]) {
+            "\\s1" -> true
+            "\\s0" -> false
+            else -> activeStyleObj.strikeout
+        }
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -2092,18 +2385,18 @@ private fun AssInspectorPanel(
             horizontalArrangement = Arrangement.spacedBy(5.dp, Alignment.CenterHorizontally),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            AssTagChip("B", TextMain) { onQuickTagChipClicked("{\\b1}") }
-            AssTagChip("I", TextMain) { onQuickTagChipClicked("{\\i1}") }
-            AssTagChip("U", TextMain) { onQuickTagChipClicked("{\\u1}") }
-            AssTagChip("S", TextMain) { onQuickTagChipClicked("{\\s1}") }
+            AssTagChip("B", if (isBoldActive) AccentCyan else TextMain) { onQuickTagChipClicked("b") }
+            AssTagChip("I", if (isItalicActive) AccentCyan else TextMain) { onQuickTagChipClicked("i") }
+            AssTagChip("U", if (isUnderlineActive) AccentCyan else TextMain) { onQuickTagChipClicked("u") }
+            AssTagChip("S", if (isStrikeoutActive) AccentCyan else TextMain) { onQuickTagChipClicked("s") }
             AssTagChip("\\c", ChipPrimaryColor) { onColorTagChipClicked("\\c") }
             AssTagChip("\\2c", ChipSecondaryColor) { onColorTagChipClicked("\\2c") }
             AssTagChip("\\3c", ChipOutlineColor) { onColorTagChipClicked("\\3c") }
             AssTagChip("\\4c", ChipShadowColor) { onColorTagChipClicked("\\4c") }
         }
 
-        // 4. Kolom Teks Dialog (~110dp) dengan Intersepsi Tombol Enter Keyboard -> \N
-        BasicTextField(
+        // 4. Kolom Teks Dialog (~110dp) OutlinedTextField terikat dua arah dengan event aktif di ProjectSessionManager
+        OutlinedTextField(
             value = textFieldValue,
             onValueChange = onTextFieldValueChange,
             textStyle = TextStyle(
@@ -2111,14 +2404,30 @@ private fun AssInspectorPanel(
                 fontSize = 13.sp,
                 lineHeight = 18.sp,
             ),
-            cursorBrush = SolidColor(AccentCyan),
+            placeholder = {
+                Text(
+                    text = if (activeEvent == null) {
+                        "Tidak ada dialog dipilih. Ketuk [➕] atau ketik untuk membuat baris baru..."
+                    } else {
+                        "Ketik terjemahan dialog... (Tekan Enter untuk \\N)"
+                    },
+                    color = Color(0xFF64748B),
+                    fontSize = 12.sp,
+                )
+            },
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedTextColor = Color.White,
+                unfocusedTextColor = Color.White,
+                cursorColor = AccentCyan,
+                focusedContainerColor = BgDarkest,
+                unfocusedContainerColor = BgDarkest,
+                focusedBorderColor = AccentCyan,
+                unfocusedBorderColor = BorderHighlight,
+            ),
+            shape = RoundedCornerShape(6.dp),
             modifier = Modifier
                 .fillMaxWidth()
                 .height(110.dp)
-                .clip(RoundedCornerShape(6.dp))
-                .background(BgDarkest)
-                .border(1.dp, BorderHighlight, RoundedCornerShape(6.dp))
-                .padding(horizontal = 10.dp, vertical = 7.dp)
                 .onPreviewKeyEvent { keyEvent ->
                     if (keyEvent.type == KeyEventType.KeyDown &&
                         (keyEvent.key == Key.Enter || keyEvent.key == Key.NumPadEnter)
@@ -2129,22 +2438,6 @@ private fun AssInspectorPanel(
                         false
                     }
                 },
-            decorationBox = { innerTextField ->
-                Box(modifier = Modifier.fillMaxSize()) {
-                    if (textFieldValue.text.isEmpty()) {
-                        Text(
-                            text = if (activeEvent == null) {
-                                "Tidak ada dialog dipilih. Ketuk [➕] atau ketik untuk membuat baris baru..."
-                            } else {
-                                "Ketik terjemahan dialog... (Tekan Enter untuk \\N)"
-                            },
-                            color = Color(0xFF64748B),
-                            fontSize = 13.sp,
-                        )
-                    }
-                    innerTextField()
-                }
-            },
         )
     }
     HorizontalDivider(thickness = 1.dp, color = BorderColor)
@@ -2215,6 +2508,7 @@ private fun TimelineOrLineGridSection(
     activeEventId: Int?,
     currentPlayheadUs: Long,
     keyframesUs: List<Long>,
+    mediaDurationUs: Long = 0L,
     onPlayheadScrubbed: (Long) -> Unit,
     onActiveTimingChanged: (Long, Long, Boolean) -> Unit,
     onSelectEvent: (Int?) -> Unit,
@@ -2344,6 +2638,7 @@ private fun TimelineOrLineGridSection(
                 activeEventId = activeEventId,
                 currentPlayheadUs = currentPlayheadUs,
                 keyframesUs = keyframesUs,
+                mediaDurationUs = mediaDurationUs,
                 onPlayheadScrubbed = onPlayheadScrubbed,
                 onActiveTimingChanged = onActiveTimingChanged,
                 onSelectEvent = onSelectEvent,

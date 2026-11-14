@@ -18,10 +18,10 @@ The development of SubEdit is organized across functional milestones:
 
 | Milestone | Status | Description |
 | :--- | :--- | :--- |
-| **Core Engine** | Completed | In-memory ASS v4+ domain models, microsecond `SubTime` arithmetic, lossless tokenizer, SRT parser and exporter. |
-| **Media Core & Sync** | In Progress | Native `libmpv` integration, FFmpeg software decoding fallback for AVC High 4:2:2 `yuv422p`, and playhead tracking stabilization. |
-| **Waveform Timing** | Stabilizing | Center-playhead audio canvas, 50 buckets/sec PCM peak extraction, and locked time-bucket scrubbing. |
-| **Visual Typesetting** | Planned | Touch-based `\pos` and `\move` coordinate dragging with intelligent tag injection. |
+| **Core Engine** | Completed | In-memory ASS v4+ domain models, microsecond `SubTime` arithmetic, lossless Aegisub round-trip parser (`[V4+ Styles]`, metadata sections, and `Comment:` lines), SRT parser and exporter. |
+| **Media Core & Sync** | Completed | Native `libmpv` integration, auto chroma-only proxy (`yuv422p` to `yuv420p`) with FFmpeg software fallback, `32MiB`/`16MiB` demuxer cache cap, and idle-state guard (`isMediaLoaded`). |
+| **Waveform Timing** | Completed | Center-playhead audio canvas, 50 buckets/sec PCM peak extraction, viewport culling, and locked time-bucket scrubbing. |
+| **Visual Typesetting** | Completed | 5-tool visual typesetting bar (`Select`, `\pos`, `\frz`, `\frx/\fry`, `\fscx/\fscy`) with single-block head-tag upsert parser. |
 | **Packaging & Optimization**| Planned | Multi-ABI split optimization to trim release APK footprint down to ~45 MB. |
 
 ---
@@ -30,7 +30,7 @@ The development of SubEdit is organized across functional milestones:
 
 - **Single Session In Memory**: All editor controls, dialog inspectors, and player tracks observe a unified `ProjectSessionManager` instance, eliminating drift between the visual canvas and playback state.
 - **Pure Function Resolution**: Playhead matching uses `ActiveSubtitleResolver.findActiveDialogue`, enforcing `start <= time < end` boundary rules and ignoring comment events.
-- **Software Decoding Fallback**: Using `hwdec=auto-safe`, `libmpv` renders anime files and production formats that standard Android `MediaCodec` ASIC hardware cannot decode.
+- **Auto Chroma-Only Proxy & Software Decoding Fallback**: `ChromaProxyConverter` detects AVC High 4:2:2 (`yuv422p`) streams and transcodes chroma to `yuv420p` via hardware `MediaCodec` (preserving 100% original resolution, 1:1 PTS/frame count, and raw audio passthrough), paired with `hwdec=auto-safe` software decoding fallback and an `isMediaLoaded` idle-state guard.
 - **Thermal-Efficient Audio Extraction**: Background audio extraction downsamples to 50 amplitude buckets per second using `Dispatchers.IO`, caching waveforms in memory to preserve battery life and eliminate scrubbing lag.
 
 ---

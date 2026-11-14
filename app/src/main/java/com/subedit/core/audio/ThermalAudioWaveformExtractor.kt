@@ -10,6 +10,7 @@ import com.subedit.core.domain.SubTime
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.yield
 import java.nio.ByteOrder
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.coroutineContext
@@ -53,6 +54,11 @@ object ThermalAudioWaveformExtractor {
 
     private const val TIMEOUT_US: Long = 10_000L
     private const val SAMPLE_STRIDE: Int = 4
+    private const val YIELD_INTERVAL_BUFFERS: Int = 32
+    private const val PARTIAL_EMIT_INTERVAL_BUCKETS: Int = 750 // ~15 detik pada 50Hz
+
+    // Dispatcher IO khusus dengan batas paralelisme rendah agar tidak berebut I/O dengan demuxer libmpv
+    private val backgroundExtractorDispatcher = Dispatchers.IO.limitedParallelism(1)
 
     // In-memory cache agar file audio/video yang sudah diekstrak tidak pernah didecode ulang
     private val memoryCache = ConcurrentHashMap<String, WaveformData>()
@@ -61,11 +67,18 @@ object ThermalAudioWaveformExtractor {
         context: Context,
         mediaUri: Uri,
         bucketsPerSecond: Int = WaveformData.DEFAULT_BUCKETS_PER_SEC,
-    ): Result<WaveformData> = withContext(Dispatchers.IO) {
+        onProgressPercent: ((Int) -> Unit)? = null,
+        onPartialWaveform: ((WaveformData) -> Unit)? = null,
+    ): Result<WaveformData> = withContext(backgroundExtractorDispatcher) {
         val cacheKey = "${mediaUri}_$bucketsPerSecond"
         memoryCache[cacheKey]?.let { cached ->
+            onProgressPercent?.invoke(100)
+            onPartialWaveform?.invoke(cached)
             return@withContext Result.success(cached)
         }
+
+        // Beri ruang inisialisasi awal bagi demuxer audio/video libmpv sebelum ekstraksi PCM dimulai
+        yield()
 
         runCatching {
             val extractor = MediaExtractor()
@@ -108,9 +121,16 @@ object ThermalAudioWaveformExtractor {
                 var inputDone = false
                 var outputDone = false
                 var maxObservedPeak = 0.1f
+                var processedBuffers = 0
+                var lastEmittedBucket = 0
+                var lastReportedPercent = -1
 
                 while (!outputDone) {
                     coroutineContext.ensureActive()
+                    processedBuffers++
+                    if (processedBuffers % YIELD_INTERVAL_BUFFERS == 0) {
+                        yield()
+                    }
 
                     if (!inputDone) {
                         val inIndex = codec.dequeueInputBuffer(TIMEOUT_US)
@@ -129,6 +149,13 @@ object ThermalAudioWaveformExtractor {
                                     inputDone = true
                                 } else {
                                     val ptsUs = extractor.sampleTime.coerceAtLeast(0L)
+                                    if (onProgressPercent != null && durationUs > 0L) {
+                                        val pct = ((ptsUs * 100L) / durationUs).toInt().coerceIn(0, 100)
+                                        if (pct >= lastReportedPercent + 2) {
+                                            lastReportedPercent = pct
+                                            onProgressPercent(pct)
+                                        }
+                                    }
                                     codec.queueInputBuffer(inIndex, 0, sampleSize, ptsUs, 0)
                                     extractor.advance()
                                 }
@@ -165,6 +192,19 @@ object ThermalAudioWaveformExtractor {
                                 if (normalized > maxObservedPeak) {
                                     maxObservedPeak = normalized
                                 }
+                                if (onPartialWaveform != null &&
+                                    bucketIdx - lastEmittedBucket >= PARTIAL_EMIT_INTERVAL_BUCKETS
+                                ) {
+                                    lastEmittedBucket = bucketIdx
+                                    onPartialWaveform(
+                                        WaveformData(
+                                            peaks = peaks.copyOf(),
+                                            sampleRateHz = bucketsPerSecond,
+                                            durationUs = durationUs,
+                                            sourceLabel = "PCM 50Hz",
+                                        )
+                                    )
+                                }
                             }
                         }
                         codec.releaseOutputBuffer(outIndex, false)
@@ -187,6 +227,7 @@ object ThermalAudioWaveformExtractor {
                     durationUs = durationUs,
                     sourceLabel = "PCM 50Hz",
                 )
+                onProgressPercent?.invoke(100)
                 memoryCache[cacheKey] = data
                 data
             } finally {

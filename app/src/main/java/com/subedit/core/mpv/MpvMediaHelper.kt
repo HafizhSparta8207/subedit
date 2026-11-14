@@ -20,6 +20,9 @@ object MpvMediaHelper {
     private const val TAG = "SubEditMPV"
     private const val LIVE_PREVIEW_SUB_FILENAME = "subedit_live_preview.ass"
 
+    @Volatile
+    private var activeMediaPfd: ParcelFileDescriptor? = null
+
     /**
      * Mempersiapkan direktori font lokal di internal storage (`filesDir/fonts`)
      * dan menyalin font standar Crunchyroll dari assets agar dapat diakses langsung oleh native libass.
@@ -47,34 +50,51 @@ object MpvMediaHelper {
     }
 
     /**
-     * Menyelesaikan [Uri] Android menjadi path file riil sistem jika memungkinkan,
-     * atau mengembalikan string URI untuk dibuka secara streaming oleh core FFmpeg bawaan libmpv.
+     * Membuka [Uri] Android secara langsung menggunakan path riil atau protokol `fd://`
+     * tanpa menyalin ulang file video besar ke cache internal.
      */
+    @Synchronized
     fun resolveUriToPath(context: Context, uri: Uri): String {
         if (uri.scheme == "file") {
             return uri.path ?: uri.toString()
         }
 
-        // 1. Coba dapatkan real path dari ParcelFileDescriptor (misal file lokal di shared storage)
         try {
-            context.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
-                val realPath = Utils.findRealPath(pfd.fd)
-                if (!realPath.isNullOrEmpty() && File(realPath).exists()) {
-                    return realPath
+            val pfd = context.contentResolver.openFileDescriptor(uri, "r")
+            if (pfd != null) {
+                val realPath = runCatching { Utils.findRealPath(pfd.fd) }.getOrNull()
+                if (!realPath.isNullOrEmpty()) {
+                    val realFile = File(realPath)
+                    if (realFile.exists() && realFile.canRead()) {
+                        runCatching { pfd.close() }
+                        return realPath
+                    }
                 }
+                // Gunakan file descriptor langsung (fd://) tanpa menyalin file besar ke cache
+                closeActiveFileDescriptor()
+                activeMediaPfd = pfd
+                return "fd://${pfd.fd}"
             }
         } catch (e: Exception) {
-            Log.v(TAG, "Tidak dapat mengekstrak real path dari file descriptor: ${e.message}")
+            Log.v(TAG, "Tidak dapat membuka file descriptor langsung: ${e.message}")
         }
 
-        // 2. Fallback: Core FFmpeg di libmpv mendukung content:// URI secara langsung
         return uri.toString()
+    }
+
+    @Synchronized
+    fun closeActiveFileDescriptor() {
+        runCatching { activeMediaPfd?.close() }
+        activeMediaPfd = null
     }
 
     /**
      * Menulis skrip subtitle ASS terkini ke file cache lokal (`cacheDir/subedit_live_preview.ass`)
-     * agar dapat dibaca dan dirender secara instan oleh libass melalui perintah `sub-add` / `sub-reload`.
+     * dan melakukan sinkronisasi flush ke disk (`fos.flush()` + `fd.sync()`) sebelum perintah
+     * `sub-add` / `sub-reload` dikirimkan ke native libmpv/libass.
+     * Tetap mencetak `[Script Info]`, `[V4+ Styles]`, dan header `[Events]` meskipun daftar `events` kosong.
      */
+    @Synchronized
     fun writeLiveAssPreview(
         context: Context,
         scriptInfo: AssScriptInfo,
@@ -87,7 +107,12 @@ object MpvMediaHelper {
             styles = styles,
             events = events,
         )
-        targetFile.writeText(content, Charsets.UTF_8)
+        val bytes = content.toByteArray(Charsets.UTF_8)
+        FileOutputStream(targetFile, false).use { fos ->
+            fos.write(bytes)
+            fos.flush()
+            runCatching { fos.fd.sync() }
+        }
         return targetFile
     }
 }

@@ -107,11 +107,15 @@ data class AssScriptInfo(
     val ycbcrMatrix: String = "None",
     val wrapStyle: Int = 0,
     val scaledBorderAndShadow: Boolean = true,
+    val extraScriptInfoLines: List<String> = emptyList(),
+    val preservedSections: Map<String, List<String>> = emptyMap(),
 )
 
 /**
- * Definisi lengkap `[V4+ Styles]` sesuai standar Aegisub & Crunchyroll.
- * Nilai [encoding] dikunci secara internal ke `1` (Default UTF-8 Unicode).
+ * Definisi lengkap 23 kolom `[V4+ Styles]` sesuai standar Aegisub & Crunchyroll:
+ * `Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour,
+ *  Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle,
+ *  Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding`.
  */
 @Immutable
 data class AssStyle(
@@ -122,17 +126,26 @@ data class AssStyle(
     val secondaryColorHex: String = "#0000FF",
     val outlineColorHex: String = "#000000",
     val shadowColorHex: String = "#000000",
+    val primaryAlphaHex: String = "00",
+    val secondaryAlphaHex: String = "00",
+    val outlineAlphaHex: String = "00",
+    val shadowAlphaHex: String = "00",
     val bold: Boolean = false,
     val italic: Boolean = false,
     val underline: Boolean = false,
     val strikeout: Boolean = false,
+    val scaleX: Float = 100f,
+    val scaleY: Float = 100f,
+    val spacing: Float = 0f,
+    val angle: Float = 0f,
+    val borderStyle: Int = 1,
     val outline: Float = 2.5f,
     val shadow: Float = 1.5f,
     val alignment: Int = 2, // 1..9 numpad layout
     val marginL: Int = 60,
     val marginR: Int = 60,
     val marginV: Int = 45,
-    val encoding: Int = 1, // Terkunci internal ke 1 (UTF-8 Default)
+    val encoding: Int = 1,
 ) {
     val primaryComposeColor: Color
         get() = AssColorConverter.hexToComposeColor(primaryColorHex, Color.White)
@@ -273,6 +286,18 @@ object AssColorConverter {
         return "#${rr.uppercase()}${gg.uppercase()}${bb.uppercase()}"
     }
 
+    fun assToAlphaHex(assColor: String, fallbackAlphaHex: String = "00"): String {
+        val cleaned = assColor.trim()
+            .removePrefix("&")
+            .removePrefix("H")
+            .removePrefix("h")
+            .removeSuffix("&")
+        if (cleaned.length != 8) return fallbackAlphaHex
+        val aa = cleaned.substring(0, 2)
+        if (!aa.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }) return fallbackAlphaHex
+        return aa.uppercase()
+    }
+
     fun hexToAss(hexColor: String, alphaHex: String = "00"): String {
         val cleaned = hexColor.trim().removePrefix("#").padStart(6, '0').take(6).uppercase()
         val rr = cleaned.substring(0, 2)
@@ -356,6 +381,9 @@ data class AssDialogueEvent(
     val isComment: Boolean = false,
     val style: String = "Default",
     val actor: String = "",
+    val marginL: Int = 0,
+    val marginR: Int = 0,
+    val marginV: Int = 0,
     val effect: String = "",
     val rawText: String,
 ) {
@@ -390,15 +418,19 @@ val AssDialogueEvent.end: SubTime
     get() = SubTime(endUs)
 
 /**
- * Mode tool Typesetting Visual di bawah Audio Timeline Canvas (6 Tombol tanpa tombol KF).
+ * 5 Alat Utama Visual Typesetting di bilah bawah Audio Timeline Canvas:
+ * 1) Select / Pointer
+ * 2) Position (`\pos`)
+ * 3) Rotate 2D (`\frz`)
+ * 4) Perspective 3D (`\frx` & `\fry`)
+ * 5) Scale (`\fscx` & `\fscy`)
  */
 enum class VisualTypesetTool(val symbol: String, val label: String) {
-    STANDARD("↖️", "Pointer Mode"),
+    STANDARD("↖️", "Select / Pointer"),
     POS("✥", "\\pos(x,y)"),
     ROTATE_Z("🔄", "\\frz"),
     ROTATE_XY("📐", "\\frx/\\fry"),
     SCALE("⤢", "\\fscx/\\fscy"),
-    CLIP("✂️", "\\clip"),
 }
 
 /**
@@ -415,7 +447,6 @@ data class SubtitleVisualTransform(
     val fry: Float = 0f,
     val fscx: Float = 100f,
     val fscy: Float = 100f,
-    val clipRect: IntArray? = null, // [x1, y1, x2, y2] dalam koordinat PlayRes
 )
 
 /**
@@ -432,6 +463,7 @@ data class AssProjectItem(
     val styles: List<AssStyle> = AssStyle.defaultSingleStyle(),
     val events: List<AssDialogueEvent> = emptyList(),
     val keyframesUs: List<Long> = emptyList(),
+    val preservedSections: Map<String, List<String>> = scriptInfo.preservedSections,
 ) {
     companion object {
         /**

@@ -1,8 +1,9 @@
 package com.subedit.ui.editor
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
@@ -13,7 +14,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -21,6 +21,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
@@ -33,10 +34,14 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.subedit.core.audio.WaveformData
+import com.subedit.core.domain.ActiveSubtitleResolver
 import com.subedit.core.domain.AssDialogueEvent
 import com.subedit.core.domain.DialogueTokenizer
 import com.subedit.core.domain.KeyframeEngine
 import com.subedit.core.domain.SubTime
+import com.subedit.core.domain.TimingConstraints
+import com.subedit.core.domain.end
+import com.subedit.core.domain.start
 import com.subedit.ui.theme.AccentCoral
 import com.subedit.ui.theme.AccentCyan
 import com.subedit.ui.theme.AccentGreen
@@ -53,6 +58,7 @@ import com.subedit.ui.theme.WaveMutedGreen
 import com.subedit.ui.theme.WaveOtherDialogueGreen
 import kotlin.math.abs
 import kotlin.math.floor
+import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 
@@ -91,6 +97,7 @@ fun CenterPlayheadWaveformCanvas(
     activeEventId: Int?,
     currentPlayheadUs: Long,
     keyframesUs: List<Long>,
+    mediaDurationUs: Long = 0L,
     pixelsPerSecond: Float = 70f,
     snapToKeyframes: Boolean = true,
     onPlayheadScrubbed: (newPlayheadUs: Long) -> Unit,
@@ -114,6 +121,7 @@ fun CenterPlayheadWaveformCanvas(
     val latestActiveEvent by rememberUpdatedState(activeEvent)
     val latestPlayheadUs by rememberUpdatedState(currentPlayheadUs)
     val latestKeyframesUs by rememberUpdatedState(keyframesUs)
+    val latestMediaDurationUs by rememberUpdatedState(mediaDurationUs)
     val latestSnap by rememberUpdatedState(snapToKeyframes)
     val latestOnScrub by rememberUpdatedState(onPlayheadScrubbed)
     val latestOnTimingChanged by rememberUpdatedState(onActiveTimingChanged)
@@ -174,151 +182,171 @@ fun CenterPlayheadWaveformCanvas(
             .fillMaxSize()
             .background(BgTimelineCanvas)
             .pointerInput(pxPerSec) {
-                detectTapGestures(
-                    onTap = { tapOffset ->
-                        val centerX = size.width * 0.5f
-                        val deltaSec = (tapOffset.x - centerX) / pxPerSec
+                // Gabungan deteksi ketuk (tap < touchSlop) dan geser (drag >= touchSlop) dalam satu pointer gesture
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    val startOffset = down.position
+                    val centerX = size.width * 0.5f
+                    val touchSlop = viewConfiguration.touchSlop
+
+                    accumulatedDragPx = 0f
+                    var totalDx = 0f
+                    var totalDy = 0f
+                    var isDragging = false
+
+                    dragInitialPlayheadUs = latestPlayheadUs
+                    val currentActive = latestActiveEvent
+                    if (currentActive != null) {
+                        val startX = centerX +
+                            ((currentActive.startUs - latestPlayheadUs).toFloat() / SubTime.US_PER_SEC) * pxPerSec
+                        val endX = centerX +
+                            ((currentActive.endUs - latestPlayheadUs).toFloat() / SubTime.US_PER_SEC) * pxPerSec
+
+                        val distStart = abs(startOffset.x - startX)
+                        val distEnd = abs(startOffset.x - endX)
+
+                        when {
+                            distStart <= hitRadiusPx && distStart <= distEnd -> {
+                                dragMode = TimelineDragMode.DRAG_START
+                                dragInitialStartUs = currentActive.startUs
+                                dragInitialEndUs = currentActive.endUs
+                            }
+                            distEnd <= hitRadiusPx -> {
+                                dragMode = TimelineDragMode.DRAG_END
+                                dragInitialStartUs = currentActive.startUs
+                                dragInitialEndUs = currentActive.endUs
+                            }
+                            else -> {
+                                dragMode = TimelineDragMode.SCRUB
+                            }
+                        }
+                    } else {
+                        dragMode = TimelineDragMode.SCRUB
+                    }
+
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull { it.id == down.id } ?: event.changes.firstOrNull()
+                        if (change == null || !change.pressed) {
+                            break
+                        }
+
+                        val delta = change.positionChange()
+                        totalDx += delta.x
+                        totalDy += delta.y
+
+                        if (!isDragging && hypot(totalDx, totalDy) > touchSlop) {
+                            isDragging = true
+                        }
+
+                        if (isDragging) {
+                            change.consume()
+                            accumulatedDragPx += delta.x
+                            val deltaUs = ((accumulatedDragPx / pxPerSec) * SubTime.US_PER_SEC).toLong()
+                            val effectiveDurationUs = max(latestMediaDurationUs, latestWaveform?.durationUs ?: 0L)
+
+                            when (dragMode) {
+                                TimelineDragMode.DRAG_START -> {
+                                    val rawStart = (dragInitialStartUs + deltaUs).coerceAtLeast(0L)
+                                    val snappedStart = if (latestSnap) {
+                                        KeyframeEngine.snapToKeyframe(rawStart, latestKeyframesUs, 80_000L)
+                                    } else {
+                                        rawStart
+                                    }
+                                    val clampedStart = TimingConstraints.clampStartUs(
+                                        proposedStartUs = snappedStart,
+                                        currentEndUs = dragInitialEndUs,
+                                    )
+                                    latestOnTimingChanged(clampedStart, dragInitialEndUs, false)
+                                }
+                                TimelineDragMode.DRAG_END -> {
+                                    val rawEnd = (dragInitialEndUs + deltaUs).coerceAtLeast(TimingConstraints.MIN_DURATION_US)
+                                    val snappedEnd = if (latestSnap) {
+                                        KeyframeEngine.snapToKeyframe(rawEnd, latestKeyframesUs, 80_000L)
+                                    } else {
+                                        rawEnd
+                                    }
+                                    val clampedEnd = TimingConstraints.clampEndUs(
+                                        currentStartUs = dragInitialStartUs,
+                                        proposedEndUs = snappedEnd,
+                                        durationUs = effectiveDurationUs,
+                                    )
+                                    latestOnTimingChanged(dragInitialStartUs, clampedEnd, false)
+                                }
+                                TimelineDragMode.SCRUB -> {
+                                    val maxEventEndUs = latestEvents.maxOfOrNull { it.endUs } ?: 0L
+                                    val maxDur = if (effectiveDurationUs > 0L) {
+                                        effectiveDurationUs
+                                    } else {
+                                        max(maxEventEndUs + 60L * SubTime.US_PER_SEC, 3_600L * SubTime.US_PER_SEC)
+                                    }
+                                    val scrubbedUs = (dragInitialPlayheadUs - deltaUs).coerceIn(0L, maxDur)
+                                    latestOnScrub(scrubbedUs)
+                                }
+                                TimelineDragMode.NONE -> Unit
+                            }
+                        }
+                    }
+
+                    if (!isDragging) {
+                        // Ketukan di bawah touchSlop: cari segmen dialog pada waktu tersebut via ActiveSubtitleResolver
+                        val deltaSec = (startOffset.x - centerX) / pxPerSec
                         val tappedTimeUs = (latestPlayheadUs + (deltaSec * SubTime.US_PER_SEC).toLong())
                             .coerceAtLeast(0L)
+                        val tappedTimeMs = tappedTimeUs / 1_000L
 
-                        val hitEvent = latestEvents.firstOrNull { ev ->
-                            tappedTimeUs in ev.startUs..ev.endUs
-                        }
+                        val hitEvent = ActiveSubtitleResolver.findActiveDialogue(latestEvents, tappedTimeMs)
+                            ?: ActiveSubtitleResolver.findActiveDialogueUs(latestEvents, tappedTimeUs)
                         if (hitEvent != null) {
                             latestOnSelectEvent(hitEvent.id)
                         } else {
-                            // Ketuk area kosong -> unselect (activeEventId = null) agar Tombol 1 menjadi ➕
                             latestOnSelectEvent(null)
                         }
+                    } else if (dragMode == TimelineDragMode.DRAG_START || dragMode == TimelineDragMode.DRAG_END) {
+                        latestActiveEvent?.let { ev ->
+                            latestOnTimingChanged(ev.startUs, ev.endUs, true)
+                        }
                     }
-                )
-            }
-            .pointerInput(pxPerSec) {
-                detectDragGestures(
-                    onDragStart = { startOffset ->
-                        val centerX = size.width * 0.5f
-                        accumulatedDragPx = 0f
-                        dragInitialPlayheadUs = latestPlayheadUs
-
-                        val currentActive = latestActiveEvent
-                        if (currentActive != null) {
-                            val startX = centerX +
-                                ((currentActive.startUs - latestPlayheadUs).toFloat() / SubTime.US_PER_SEC) * pxPerSec
-                            val endX = centerX +
-                                ((currentActive.endUs - latestPlayheadUs).toFloat() / SubTime.US_PER_SEC) * pxPerSec
-
-                            val distStart = abs(startOffset.x - startX)
-                            val distEnd = abs(startOffset.x - endX)
-
-                            when {
-                                distStart <= hitRadiusPx && distStart <= distEnd -> {
-                                    dragMode = TimelineDragMode.DRAG_START
-                                    dragInitialStartUs = currentActive.startUs
-                                    dragInitialEndUs = currentActive.endUs
-                                }
-                                distEnd <= hitRadiusPx -> {
-                                    dragMode = TimelineDragMode.DRAG_END
-                                    dragInitialStartUs = currentActive.startUs
-                                    dragInitialEndUs = currentActive.endUs
-                                }
-                                else -> {
-                                    dragMode = TimelineDragMode.SCRUB
-                                }
-                            }
-                        } else {
-                            dragMode = TimelineDragMode.SCRUB
-                        }
-                    },
-                    onDrag = { change, dragAmount ->
-                        change.consume()
-                        accumulatedDragPx += dragAmount.x
-                        val deltaUs = ((accumulatedDragPx / pxPerSec) * SubTime.US_PER_SEC).toLong()
-
-                        when (dragMode) {
-                            TimelineDragMode.DRAG_START -> {
-                                val rawStart = (dragInitialStartUs + deltaUs).coerceAtLeast(0L)
-                                val snappedStart = if (latestSnap) {
-                                    KeyframeEngine.snapToKeyframe(rawStart, latestKeyframesUs, 80_000L)
-                                } else {
-                                    rawStart
-                                }
-                                val clampedStart = min(snappedStart, (dragInitialEndUs - 100_000L).coerceAtLeast(0L))
-                                latestOnTimingChanged(clampedStart, dragInitialEndUs, false)
-                            }
-                            TimelineDragMode.DRAG_END -> {
-                                val rawEnd = (dragInitialEndUs + deltaUs).coerceAtLeast(100_000L)
-                                val snappedEnd = if (latestSnap) {
-                                    KeyframeEngine.snapToKeyframe(rawEnd, latestKeyframesUs, 80_000L)
-                                } else {
-                                    rawEnd
-                                }
-                                val clampedEnd = max(snappedEnd, dragInitialStartUs + 100_000L)
-                                latestOnTimingChanged(dragInitialStartUs, clampedEnd, false)
-                            }
-                            TimelineDragMode.SCRUB -> {
-                                val maxEventEndUs = latestEvents.maxOfOrNull { it.endUs } ?: 0L
-                                val waveDurUs = latestWaveform?.durationUs ?: 0L
-                                val maxDur = max(
-                                    max(waveDurUs, maxEventEndUs + 60L * SubTime.US_PER_SEC),
-                                    3_600L * SubTime.US_PER_SEC, // Bebas scrub hingga 1 jam saat tanpa audio
-                                )
-                                val scrubbedUs = (dragInitialPlayheadUs - deltaUs).coerceIn(0L, maxDur)
-                                latestOnScrub(scrubbedUs)
-                            }
-                            TimelineDragMode.NONE -> Unit
-                        }
-                    },
-                    onDragEnd = {
-                        if (dragMode == TimelineDragMode.DRAG_START || dragMode == TimelineDragMode.DRAG_END) {
-                            latestActiveEvent?.let { ev ->
-                                latestOnTimingChanged(ev.startUs, ev.endUs, true)
-                            }
-                        }
-                        dragMode = TimelineDragMode.NONE
-                    },
-                    onDragCancel = {
-                        dragMode = TimelineDragMode.NONE
-                    },
-                )
-            }
-            .drawWithCache {
-                val centerX = size.width * 0.5f
-                val midY = size.height * 0.5f
-                val arrowPath = Path().apply {
-                    moveTo(centerX - 6.dp.toPx(), 0f)
-                    lineTo(centerX + 6.dp.toPx(), 0f)
-                    lineTo(centerX, 8.dp.toPx())
-                    close()
-                }
-                val barStepPx = 2.8.dp.toPx().coerceAtLeast(2.5f)
-                val barWidthPx = 2.dp.toPx().coerceAtLeast(1.8f)
-                val maxWaveHalfHeight = max(24f, (size.height - 36.dp.toPx()) * 0.48f)
-
-                onDrawBehind {
-                    drawAegisubContinuousTimeline(
-                        waveformData = waveformData,
-                        events = events,
-                        activeEvent = activeEvent,
-                        playheadUs = currentPlayheadUs,
-                        keyframesUs = keyframesUs,
-                        centerX = centerX,
-                        midY = midY,
-                        pxPerSec = pxPerSec,
-                        barStepPx = barStepPx,
-                        barWidthPx = barWidthPx,
-                        maxWaveHalfHeight = maxWaveHalfHeight,
-                        arrowPath = arrowPath,
-                        textMeasurer = textMeasurer,
-                        tickTextStyle = tickTextStyle,
-                        emptyAudioGuideTextStyle = emptyAudioGuideTextStyle,
-                        activePreviewTextStyle = activePreviewTextStyle,
-                        inactivePreviewTextStyle = inactivePreviewTextStyle,
-                        activeMetaTextStyle = activeMetaTextStyle,
-                        inactiveMetaTextStyle = inactiveMetaTextStyle,
-                    )
+                    dragMode = TimelineDragMode.NONE
                 }
             }
-    )
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val centerX = size.width * 0.5f
+            val midY = size.height * 0.5f
+            val arrowPath = Path().apply {
+                moveTo(centerX - 6.dp.toPx(), 0f)
+                lineTo(centerX + 6.dp.toPx(), 0f)
+                lineTo(centerX, 8.dp.toPx())
+                close()
+            }
+            val barStepPx = 2.8.dp.toPx().coerceAtLeast(2.5f)
+            val barWidthPx = 2.dp.toPx().coerceAtLeast(1.8f)
+            val maxWaveHalfHeight = max(24f, (size.height - 36.dp.toPx()) * 0.48f)
+
+            drawAegisubContinuousTimeline(
+                waveformData = waveformData,
+                events = events,
+                activeEvent = activeEvent,
+                playheadUs = currentPlayheadUs,
+                keyframesUs = keyframesUs,
+                centerX = centerX,
+                midY = midY,
+                pxPerSec = pxPerSec,
+                barStepPx = barStepPx,
+                barWidthPx = barWidthPx,
+                maxWaveHalfHeight = maxWaveHalfHeight,
+                arrowPath = arrowPath,
+                textMeasurer = textMeasurer,
+                tickTextStyle = tickTextStyle,
+                emptyAudioGuideTextStyle = emptyAudioGuideTextStyle,
+                activePreviewTextStyle = activePreviewTextStyle,
+                inactivePreviewTextStyle = inactivePreviewTextStyle,
+                activeMetaTextStyle = activeMetaTextStyle,
+                inactiveMetaTextStyle = inactiveMetaTextStyle,
+            )
+        }
+    }
 }
 
 private fun DrawScope.drawAegisubContinuousTimeline(
@@ -350,6 +378,17 @@ private fun DrawScope.drawAegisubContinuousTimeline(
     val halfSpanSec = centerX / pxPerSec
     val startVisibleSec = max(0f, playheadSec - halfSpanSec)
     val endVisibleSec = playheadSec + halfSpanSec
+
+    // Viewport Culling: Filter hanya segmen subtitle yang masuk dalam rentang waktu layar saat ini
+    val visibleStartUs = (max(0f, startVisibleSec - 0.5f) * SubTime.US_PER_SEC).toLong()
+    val visibleEndUs = ((endVisibleSec + 0.5f) * SubTime.US_PER_SEC).toLong()
+    val visibleStartMs = visibleStartUs / 1_000L
+    val visibleEndMs = visibleEndUs / 1_000L
+    val visibleEvents = events.filter { event ->
+        val eventStartMs = event.startUs / 1_000L
+        val eventEndMs = event.endUs / 1_000L
+        eventEndMs >= visibleStartMs && eventStartMs <= visibleEndMs
+    }
 
     // 1. Grid Vertikal per Detik (Time Ruler) & Garis Tengah Horizontal
     val firstTickSec = floor(startVisibleSec).toInt()
@@ -388,10 +427,10 @@ private fun DrawScope.drawAegisubContinuousTimeline(
     )
 
     // 2. Waveform Multi-Warna Kontinu (HANYA jika waveformData != null)
-    // Kunci posisi sampling amplitudo audio pada indeks waktu absolut (bucket time index)
-    // agar gelombang suara tidak terdistorsi atau flickering saat di-scrubbing.
+    // Kunci posisi sampling amplitudo audio pada indeks bucket waktu absolut (timestampSec * 50)
+    // agar bentuk gelombang tetap statis dan tidak bergeser saat kanvas digulir.
     if (waveformData != null && waveformData.peaks.isNotEmpty()) {
-        val sampleRate = waveformData.sampleRateHz.coerceAtLeast(1)
+        val sampleRate = 50 // 50 bucket/detik (timestampSec * 50)
         val bucketStepPx = pxPerSec / sampleRate.toFloat()
         val stride = max(1, (1.8f / bucketStepPx).toInt())
         val effectiveBarWidth = max(1.5f, (bucketStepPx * stride * 0.78f).coerceAtLeast(barWidthPx))
@@ -399,20 +438,22 @@ private fun DrawScope.drawAegisubContinuousTimeline(
         val minVisibleSec = max(0f, playheadSec - (centerX + 16f) / pxPerSec)
         val maxVisibleSec = playheadSec + (w - centerX + 16f) / pxPerSec
 
-        val startBucket = ((minVisibleSec * sampleRate).toInt() - 1).coerceAtLeast(0)
-        val endBucket = ((maxVisibleSec * sampleRate).toInt() + 1).coerceAtMost(waveformData.peaks.size - 1)
+        val startBucket = ((minVisibleSec * 50f).toInt() - 1).coerceAtLeast(0)
+        val endBucket = ((maxVisibleSec * 50f).toInt() + 1).coerceAtMost(waveformData.peaks.size - 1)
 
         var bucketIdx = startBucket
         while (bucketIdx <= endBucket) {
-            val bucketTimeUs = (bucketIdx.toLong() * SubTime.US_PER_SEC) / sampleRate
-            val x = centerX + ((bucketTimeUs - playheadUs).toFloat() / SubTime.US_PER_SEC.toFloat()) * pxPerSec
+            val timestampSec = bucketIdx.toFloat() / 50f
+            val lockedBucketIndex = (timestampSec * 50f).toInt().coerceIn(0, waveformData.peaks.size - 1)
+            val bucketTimeUs = (lockedBucketIndex.toLong() * SubTime.US_PER_SEC) / sampleRate
+            val x = centerX + (timestampSec - playheadSec) * pxPerSec
 
             if (x in -effectiveBarWidth..(w + effectiveBarWidth)) {
-                val amp = waveformData.peaks[bucketIdx]
+                val amp = waveformData.peaks[lockedBucketIndex]
                 val barHalfH = max(2f, amp * maxWaveHalfHeight)
                 val barColor = when {
                     activeEvent != null && bucketTimeUs in activeEvent.startUs..activeEvent.endUs -> WaveActiveRed
-                    events.any { it.id != activeEvent?.id && bucketTimeUs in it.startUs..it.endUs } -> WaveOtherDialogueGreen
+                    visibleEvents.any { it.id != activeEvent?.id && bucketTimeUs in it.startUs..it.endUs } -> WaveOtherDialogueGreen
                     else -> WaveMutedGreen
                 }
 
@@ -425,8 +466,8 @@ private fun DrawScope.drawAegisubContinuousTimeline(
             bucketIdx += stride
         }
     } else {
-        // Tanpa audio: Gambar overlay tipis blok dialog di sekitar garis datar & teks panduan redup
-        for (ev in events) {
+        // Tanpa audio: Gambar overlay tipis blok dialog di sekitar garis datar & teks panduan redup (hanya visibleEvents)
+        for (ev in visibleEvents) {
             val startSec = ev.startUs.toFloat() / SubTime.US_PER_SEC.toFloat()
             val endSec = ev.endUs.toFloat() / SubTime.US_PER_SEC.toFloat()
             val startX = (centerX + (startSec - playheadSec) * pxPerSec).coerceIn(0f, w)
@@ -460,11 +501,9 @@ private fun DrawScope.drawAegisubContinuousTimeline(
 
     // 3. Garis Vertikal Keyframe Ungu (#C084FC)
     if (keyframesUs.isNotEmpty()) {
-        val startVisibleUs = (startVisibleSec * SubTime.US_PER_SEC).toLong() - 500_000L
-        val endVisibleUs = (endVisibleSec * SubTime.US_PER_SEC).toLong() + 500_000L
         for (kfUs in keyframesUs) {
-            if (kfUs < startVisibleUs) continue
-            if (kfUs > endVisibleUs) break
+            if (kfUs < visibleStartUs) continue
+            if (kfUs > visibleEndUs) break
             val kfSec = kfUs.toFloat() / SubTime.US_PER_SEC.toFloat()
             val kfX = centerX + (kfSec - playheadSec) * pxPerSec
             drawLine(
@@ -481,8 +520,9 @@ private fun DrawScope.drawAegisubContinuousTimeline(
         }
     }
 
-    // 4. Overlay Blok Dialog, Teks Preview, Lead-In (Cyan) & Lead-Out (Merah)
-    for (ev in events) {
+    // 4. Overlay Blok Dialog (Viewport Culled), Teks Preview dengan clipRect, Lead-In (Cyan) & Lead-Out (Merah)
+    val maxCanvasWidthConstraint = w.toInt().coerceIn(1, 8192)
+    for (ev in visibleEvents) {
         val startSec = ev.startUs.toFloat() / SubTime.US_PER_SEC.toFloat()
         val endSec = ev.endUs.toFloat() / SubTime.US_PER_SEC.toFloat()
         val startX = centerX + (startSec - playheadSec) * pxPerSec
@@ -492,30 +532,51 @@ private fun DrawScope.drawAegisubContinuousTimeline(
         if (endX > 0f && startX < w) {
             val clipLeft = startX.coerceAtLeast(0f)
             val clipRight = endX.coerceAtMost(w)
-            val maxTextWidthPx = (endX - startX) - 12.dp.toPx()
+            val textLeftX = max(clipLeft + 4f, startX + 6.dp.toPx())
+            val availableWidthPx = (clipRight - textLeftX - 4.dp.toPx()).coerceAtMost(w)
             val displayLabel = DialogueTokenizer.formatForWaveformLabel(ev.rawText)
             val prefix = if (ev.isComment) "[C] " else ""
             val fullLabel = prefix + displayLabel
 
-            if (clipRight - clipLeft > 16f && maxTextWidthPx > 10f && fullLabel.isNotEmpty()) {
+            if (clipRight > clipLeft) {
                 clipRect(
                     left = clipLeft,
                     top = 0f,
                     right = clipRight,
-                    bottom = h - 18.dp.toPx(),
+                    bottom = h,
                 ) {
-                    val measuredLabel = textMeasurer.measure(
-                        text = fullLabel,
-                        style = if (isActive) activePreviewTextStyle else inactivePreviewTextStyle,
-                        overflow = TextOverflow.Ellipsis,
-                        softWrap = false,
-                        maxLines = 1,
-                        constraints = Constraints(maxWidth = maxTextWidthPx.toInt().coerceAtLeast(1)),
-                    )
-                    drawText(
-                        textLayoutResult = measuredLabel,
-                        topLeft = Offset(startX + 6.dp.toPx(), 4.dp.toPx()),
-                    )
+                    if (availableWidthPx > 10f && fullLabel.isNotEmpty()) {
+                        val safeConstraintWidth = availableWidthPx.toInt().coerceIn(1, maxCanvasWidthConstraint)
+                        val measuredLabel = textMeasurer.measure(
+                            text = fullLabel,
+                            style = if (isActive) activePreviewTextStyle else inactivePreviewTextStyle,
+                            overflow = TextOverflow.Ellipsis,
+                            softWrap = false,
+                            maxLines = 1,
+                            constraints = Constraints(maxWidth = safeConstraintWidth),
+                        )
+                        drawText(
+                            textLayoutResult = measuredLabel,
+                            topLeft = Offset(textLeftX, 4.dp.toPx()),
+                        )
+                    }
+
+                    // Label Nomor Line & Durasi (#31 (2.00s)) ikut terbungkus clipRect segmen
+                    if (clipRight - textLeftX > 44f) {
+                        val safeMetaWidth = (clipRight - textLeftX).toInt().coerceIn(1, maxCanvasWidthConstraint)
+                        val measuredMeta = textMeasurer.measure(
+                            text = "#${ev.id} (${ev.durationSecondsLabel})",
+                            style = if (isActive) activeMetaTextStyle else inactiveMetaTextStyle,
+                            overflow = TextOverflow.Clip,
+                            softWrap = false,
+                            maxLines = 1,
+                            constraints = Constraints(maxWidth = safeMetaWidth),
+                        )
+                        drawText(
+                            textLayoutResult = measuredMeta,
+                            topLeft = Offset(textLeftX, h - 26.dp.toPx()),
+                        )
+                    }
                 }
             }
         }
@@ -565,19 +626,6 @@ private fun DrawScope.drawAegisubContinuousTimeline(
                     color = AccentCoral,
                     topLeft = Offset(endX - handleW * 0.5f, h - handleH - 6.dp.toPx()),
                     size = Size(handleW, handleH),
-                )
-            }
-        }
-
-        // Label Nomor Line & Durasi (#31 (2.00s))
-        if (startX in -60f..(w - 40f)) {
-            val labelX = max(4f, startX + 6.dp.toPx())
-            if (endX - labelX > 44f) {
-                drawText(
-                    textMeasurer = textMeasurer,
-                    text = "#${ev.id} (${ev.durationSecondsLabel})",
-                    style = if (isActive) activeMetaTextStyle else inactiveMetaTextStyle,
-                    topLeft = Offset(labelX, h - 26.dp.toPx()),
                 )
             }
         }

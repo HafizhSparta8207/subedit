@@ -81,4 +81,71 @@ class ProjectSessionManagerTest {
         assertEquals("Added line", updatedState.script.events[0].rawText)
         assertEquals(initialRevision + 1L, updatedState.contentRevision)
     }
+
+    @Test
+    fun projectSessionManager_playheadDoesNotIncrementContentRevision_andMediaLoadingStateUpdates() {
+        val project = AssProjectItem.createZeroStateProject(1).copy(
+            events = listOf(
+                AssDialogueEvent(
+                    id = 10,
+                    startUs = 1_000_000L,
+                    endUs = 4_000_000L,
+                    rawText = "Initial text",
+                )
+            )
+        )
+        ProjectSessionManager.initializeSession(project)
+        val initialRevision = ProjectSessionManager.sessionState.value.contentRevision
+
+        ProjectSessionManager.setMediaLoading(true)
+        assertEquals(true, ProjectSessionManager.sessionState.value.isMediaLoading)
+
+        ProjectSessionManager.setMediaLoading(false)
+        assertEquals(false, ProjectSessionManager.sessionState.value.isMediaLoading)
+
+        // Pergerakan playhead tidak boleh mengubah contentRevision (agar sub-reload tidak dipanggil saat seek)
+        ProjectSessionManager.updatePlayhead(2_500_000L)
+        assertEquals(initialRevision, ProjectSessionManager.sessionState.value.contentRevision)
+    }
+
+    @Test
+    fun projectSessionManager_supportsTwoWayTextEditAndUndoRedoWithRevisionIncrement() {
+        val project = AssProjectItem.createZeroStateProject(1).copy(
+            events = listOf(
+                AssDialogueEvent(
+                    id = 5,
+                    startUs = 1_000_000L,
+                    endUs = 3_000_000L,
+                    rawText = "Teks Awal",
+                )
+            )
+        )
+        ProjectSessionManager.initializeSession(project)
+
+        // Simpan snapshot undo lalu perbarui teks dialog aktif
+        ProjectSessionManager.updateActiveDialogueText("Teks Baru Diedit", recordUndo = true)
+        val afterEdit = ProjectSessionManager.sessionState.value
+        assertEquals("Teks Baru Diedit", afterEdit.script.events.first().rawText)
+        assertEquals(true, afterEdit.canUndo)
+        assertEquals(false, afterEdit.canRedo)
+        val revAfterEdit = afterEdit.contentRevision
+
+        // Undo harus mengembalikan teks sebelumnya dan menaikkan contentRevision untuk memicu sub-reload
+        val undone = ProjectSessionManager.undo()
+        assertNotNull(undone)
+        val afterUndo = ProjectSessionManager.sessionState.value
+        assertEquals("Teks Awal", afterUndo.script.events.first().rawText)
+        assertEquals(false, afterUndo.canUndo)
+        assertEquals(true, afterUndo.canRedo)
+        assertEquals(revAfterEdit + 1L, afterUndo.contentRevision)
+
+        // Redo harus menerapkan kembali perubahan dan menaikkan contentRevision untuk memicu sub-reload
+        val redone = ProjectSessionManager.redo()
+        assertNotNull(redone)
+        val afterRedo = ProjectSessionManager.sessionState.value
+        assertEquals("Teks Baru Diedit", afterRedo.script.events.first().rawText)
+        assertEquals(true, afterRedo.canUndo)
+        assertEquals(false, afterRedo.canRedo)
+        assertEquals(revAfterEdit + 2L, afterRedo.contentRevision)
+    }
 }

@@ -12,16 +12,22 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.lifecycleScope
 import com.subedit.core.domain.AssProjectItem
 import com.subedit.core.domain.KeyframeEngine
 import com.subedit.core.domain.SubtitleParser
+import com.subedit.core.session.ProjectSessionManager
 import com.subedit.ui.editor.EditorScreen
 import com.subedit.ui.home.HomeScreen
 import com.subedit.ui.theme.SubEditTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
 
@@ -39,41 +45,62 @@ class MainActivity : ComponentActivity() {
                 }
 
                 var activeProject by remember { mutableStateOf<AssProjectItem?>(null) }
+                var subtitleImportVersion by remember { mutableIntStateOf(0) }
                 var selectedVideoUri by remember { mutableStateOf<Uri?>(null) }
                 var selectedAudioUri by remember { mutableStateOf<Uri?>(null) }
                 var formatErrorMessage by remember { mutableStateOf<String?>(null) }
                 var pendingAssExportContent by remember { mutableStateOf("") }
 
-                // 1. File Picker Subtitle (.ass & .srt, validasi ekstensi dengan Error Dialog)
+                // 1. File Picker Subtitle (.ass & .srt, pembacaan stream & parsing sepenuhnya di Dispatchers.IO)
                 val subtitlePickerLauncher = rememberLauncherForActivityResult(
                     contract = ActivityResultContracts.OpenDocument(),
                 ) { uri: Uri? ->
                     if (uri == null) return@rememberLauncherForActivityResult
-                    val fileName = resolveDisplayName(this, uri) ?: uri.lastPathSegment.orEmpty()
-                    if (!SubtitleParser.isSupportedSubtitleFileName(fileName)) {
-                        formatErrorMessage =
-                            "Format tidak didukung! SubEdit hanya mendukung file .ass dan .srt (Dipilih: $fileName)"
-                        return@rememberLauncherForActivityResult
-                    }
+                    lifecycleScope.launch(Dispatchers.IO) {
+                        try {
+                            val fileName = resolveDisplayName(this@MainActivity, uri)
+                                ?: uri.lastPathSegment.orEmpty()
+                            if (!SubtitleParser.isSupportedSubtitleFileName(fileName)) {
+                                withContext(Dispatchers.Main) {
+                                    formatErrorMessage =
+                                        "Format tidak didukung! SubEdit hanya mendukung file .ass dan .srt (Dipilih: $fileName)"
+                                }
+                                return@launch
+                            }
 
-                    runCatching {
-                        val rawContent = contentResolver.openInputStream(uri)
-                            ?.bufferedReader(Charsets.UTF_8)
-                            ?.use { it.readText() }
-                            ?: error("Gagal membuka stream file subtitle.")
+                            val rawContent = contentResolver.openInputStream(uri)
+                                ?.bufferedReader(Charsets.UTF_8)
+                                ?.use { it.readText() }
+                                ?: error("Gagal membuka stream file subtitle.")
 
-                        val parsedDoc = SubtitleParser.parseSubtitleContent(fileName, rawContent)
-                        val currentProj = activeProject ?: AssProjectItem.createZeroStateProject()
-                        val updatedProj = currentProj.copy(
-                            title = fileName.substringBeforeLast('.').ifEmpty { parsedDoc.scriptInfo.title },
-                            lineCount = parsedDoc.events.size,
-                            scriptInfo = parsedDoc.scriptInfo,
-                            styles = parsedDoc.styles,
-                            events = parsedDoc.events,
-                        )
-                        activeProject = updatedProj
-                    }.onFailure { err ->
-                        formatErrorMessage = "Gagal membaca file subtitle: ${err.localizedMessage}"
+                            val parsedDoc = SubtitleParser.parseSubtitleContent(fileName, rawContent)
+
+                            withContext(Dispatchers.Main) {
+                                // Reset selectedEventId = null, reset undo history, dan replace penuh daftar styles & events
+                                ProjectSessionManager.applyImportedDocument(parsedDoc)
+                                val currentProj = activeProject ?: AssProjectItem.createZeroStateProject()
+                                val updatedProj = currentProj.copy(
+                                    title = fileName.substringBeforeLast('.').ifEmpty { parsedDoc.scriptInfo.title },
+                                    lineCount = parsedDoc.events.size,
+                                    scriptInfo = parsedDoc.scriptInfo,
+                                    styles = parsedDoc.styles,
+                                    events = parsedDoc.events,
+                                    preservedSections = parsedDoc.preservedSections,
+                                )
+                                activeProject = updatedProj
+                                subtitleImportVersion++
+                            }
+                        } catch (t: Throwable) {
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    "Peringatan: Berkas subtitle rusak atau tidak dapat dibaca (${t.localizedMessage ?: "Format tidak valid"}).",
+                                    Toast.LENGTH_LONG,
+                                ).show()
+                                formatErrorMessage =
+                                    "Peringatan: Berkas subtitle tidak dapat diproses (${t.localizedMessage ?: "Format tidak valid"})."
+                            }
+                        }
                     }
                 }
 
@@ -95,44 +122,59 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                // 4. File Picker Keyframes (.txt / .log)
+                // 4. File Picker Keyframes (.txt / .log) di Dispatchers.IO
                 val keyframePickerLauncher = rememberLauncherForActivityResult(
                     contract = ActivityResultContracts.OpenDocument(),
                 ) { uri: Uri? ->
                     if (uri == null) return@rememberLauncherForActivityResult
-                    runCatching {
-                        val content = contentResolver.openInputStream(uri)
-                            ?.bufferedReader(Charsets.UTF_8)
-                            ?.use { it.readText() }
-                            .orEmpty()
-                        val parsedKf = KeyframeEngine.parseKeyframesTxt(content)
-                        if (parsedKf.isNotEmpty()) {
-                            activeProject = activeProject?.copy(keyframesUs = parsedKf)
-                            Toast.makeText(
-                                this,
-                                "Dimuat ${parsedKf.size} titik keyframe ungu",
-                                Toast.LENGTH_SHORT,
-                            ).show()
-                        } else {
-                            formatErrorMessage = "File keyframe (.txt/.log) tidak berisi daftar frame/waktu yang valid."
+                    lifecycleScope.launch(Dispatchers.IO) {
+                        try {
+                            val content = contentResolver.openInputStream(uri)
+                                ?.bufferedReader(Charsets.UTF_8)
+                                ?.use { it.readText() }
+                                .orEmpty()
+                            val parsedKf = KeyframeEngine.parseKeyframesTxt(content)
+                            withContext(Dispatchers.Main) {
+                                if (parsedKf.isNotEmpty()) {
+                                    activeProject = activeProject?.copy(keyframesUs = parsedKf)
+                                    Toast.makeText(
+                                        this@MainActivity,
+                                        "Dimuat ${parsedKf.size} titik keyframe ungu",
+                                        Toast.LENGTH_SHORT,
+                                    ).show()
+                                } else {
+                                    formatErrorMessage = "File keyframe (.txt/.log) tidak berisi daftar frame/waktu yang valid."
+                                }
+                            }
+                        } catch (t: Throwable) {
+                            withContext(Dispatchers.Main) {
+                                formatErrorMessage = "Gagal membaca file keyframe: ${t.localizedMessage}"
+                            }
                         }
                     }
                 }
 
-                // 5. File Saver Export .ASS
+                // 5. File Saver Export .ASS di Dispatchers.IO
                 val exportAssLauncher = rememberLauncherForActivityResult(
                     contract = ActivityResultContracts.CreateDocument("text/plain"),
                 ) { targetUri: Uri? ->
-                    if (targetUri != null && pendingAssExportContent.isNotEmpty()) {
-                        runCatching {
-                            contentResolver.openOutputStream(targetUri)?.use { out ->
-                                out.write(pendingAssExportContent.toByteArray(Charsets.UTF_8))
+                    val contentToWrite = pendingAssExportContent
+                    if (targetUri != null && contentToWrite.isNotEmpty()) {
+                        lifecycleScope.launch(Dispatchers.IO) {
+                            runCatching {
+                                contentResolver.openOutputStream(targetUri)?.use { out ->
+                                    out.write(contentToWrite.toByteArray(Charsets.UTF_8))
+                                    out.flush()
+                                }
+                            }.onSuccess {
+                                withContext(Dispatchers.Main) {
+                                    Toast.makeText(
+                                        this@MainActivity,
+                                        "Berhasil menyimpan skrip .ASS",
+                                        Toast.LENGTH_SHORT,
+                                    ).show()
+                                }
                             }
-                            Toast.makeText(
-                                this,
-                                "Berhasil menyimpan skrip .ASS",
-                                Toast.LENGTH_SHORT,
-                            ).show()
                         }
                     }
                 }
@@ -144,12 +186,14 @@ class MainActivity : ComponentActivity() {
                         onOpenProject = { clickedProject ->
                             selectedVideoUri = null
                             selectedAudioUri = null
+                            subtitleImportVersion = 0
                             activeProject = clickedProject
                         },
                         onCreateNewProject = { newZeroStateProject ->
                             // Buka editor dengan Zero-State bersih; proyek baru masuk riwayat setelah disimpan
                             selectedVideoUri = null
                             selectedAudioUri = null
+                            subtitleImportVersion = 0
                             activeProject = newZeroStateProject
                         },
                     )
@@ -160,6 +204,7 @@ class MainActivity : ComponentActivity() {
 
                     EditorScreen(
                         project = currentProject,
+                        subtitleImportVersion = subtitleImportVersion,
                         videoUri = selectedVideoUri,
                         audioUri = selectedAudioUri,
                         externalErrorMessage = formatErrorMessage,

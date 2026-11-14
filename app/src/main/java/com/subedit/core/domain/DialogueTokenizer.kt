@@ -14,34 +14,28 @@ sealed class DialogueToken {
 }
 
 /**
- * Tokenizer, parser visual transform, dan head-tag injector berstandar Aegisub.
+ * Tokenizer, parser visual transform, dan Single-Block Tag Upsert Parser berstandar Aegisub.
  * Semua ekspresi reguler dikompilasi satu kali pada level objek (zero GC allocation in loop).
  */
 object DialogueTokenizer {
 
-    private val REGEX_ASS_TAGS = Regex("""\{.*?\}""")
-    private val REGEX_ASS_TAG_GROUP = Regex("""\{([^}]*)\}""")
+    private val REGEX_ASS_TAGS = Regex("""\{[^}]*\}""")
+    private val REGEX_UNCLOSED_TRAILING_TAG = Regex("""\{[^}]*$""")
     private val REGEX_BREAK_TOKENS = Regex("""\\[Nnh]""")
-    private val REGEX_LEAD_BLOCK = Regex("""^\{([^}]*)\}([\s\S]*)$""")
+    private val REGEX_TAG_KEY_PREFIX = Regex("""^([1-4]?[a-zA-Z]+)""")
 
+    private val REGEX_PARSE_AN = Regex("""\\an([1-9])(?![0-9a-zA-Z])""")
     private val REGEX_PARSE_POS = Regex("""\\pos\(\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\)""")
-    private val REGEX_PARSE_FRZ = Regex("""\\frz(-?\d+(?:\.\d+)?)""")
+    private val REGEX_PARSE_FRZ = Regex("""\\frz?(-?\d+(?:\.\d+)?)""")
     private val REGEX_PARSE_FRX = Regex("""\\frx(-?\d+(?:\.\d+)?)""")
     private val REGEX_PARSE_FRY = Regex("""\\fry(-?\d+(?:\.\d+)?)""")
     private val REGEX_PARSE_FSCX = Regex("""\\fscx(\d+(?:\.\d+)?)""")
     private val REGEX_PARSE_FSCY = Regex("""\\fscy(\d+(?:\.\d+)?)""")
-    private val REGEX_PARSE_CLIP = Regex(
-        """\\clip\(\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\)"""
-    )
 
-    private val STATIC_TAG_REGEX: Map<String, Regex> = mapOf(
-        "pos" to Regex("""\\pos\([^)]*\)"""),
-        "clip" to Regex("""\\clip\([^)]*\)"""),
-        "frz" to Regex("""\\frz-?\d+(?:\.\d+)?"""),
-        "frx" to Regex("""\\frx-?\d+(?:\.\d+)?"""),
-        "fry" to Regex("""\\fry-?\d+(?:\.\d+)?"""),
-        "fscx" to Regex("""\\fscx-?\d+(?:\.\d+)?"""),
-        "fscy" to Regex("""\\fscy-?\d+(?:\.\d+)?"""),
+    private data class LeadingParseResult(
+        val tagMap: LinkedHashMap<String, String>,
+        val preservedComments: List<String>,
+        val body: String,
     )
 
     /**
@@ -163,14 +157,18 @@ object DialogueTokenizer {
 
     /**
      * Memformat teks ASS untuk dirender pada Monitor Video 16:9 sesuai standar Libass:
-     * - Menghapus blok tag `{...}`
+     * - Menghapus seluruh blok tag `{...}` dengan regex global `\{[^}]*\}`
      * - Mengubah `\N` menjadi baris baru (`\n`)
      * - Mengubah `\n` menjadi spasi dan `\h` menjadi non-breaking space (`\u00A0`)
      */
     fun formatForVideoDisplay(rawAss: String): String {
         if (rawAss.isEmpty()) return ""
-        return rawAss
-            .replace(REGEX_ASS_TAGS, "")
+        var cleaned = rawAss
+        while (REGEX_ASS_TAGS.containsMatchIn(cleaned)) {
+            cleaned = cleaned.replace(REGEX_ASS_TAGS, "")
+        }
+        return cleaned
+            .replace(REGEX_UNCLOSED_TRAILING_TAG, "")
             .replace("\\N", "\n")
             .replace("\\n", " ")
             .replace("\\h", "\u00A0")
@@ -183,8 +181,12 @@ object DialogueTokenizer {
      */
     fun formatForWaveformLabel(rawAss: String): String {
         if (rawAss.isEmpty()) return ""
-        return rawAss
-            .replace(REGEX_ASS_TAGS, "")
+        var cleaned = rawAss
+        while (REGEX_ASS_TAGS.containsMatchIn(cleaned)) {
+            cleaned = cleaned.replace(REGEX_ASS_TAGS, "")
+        }
+        return cleaned
+            .replace(REGEX_UNCLOSED_TRAILING_TAG, "")
             .replace(REGEX_BREAK_TOKENS, " ")
             .trim()
     }
@@ -194,54 +196,358 @@ object DialogueTokenizer {
      */
     fun countCleanCharacters(rawAss: String): Int {
         if (rawAss.isEmpty()) return 0
-        return rawAss
-            .replace(REGEX_ASS_TAGS, "")
+        var cleaned = rawAss
+        while (REGEX_ASS_TAGS.containsMatchIn(cleaned)) {
+            cleaned = cleaned.replace(REGEX_ASS_TAGS, "")
+        }
+        return cleaned
+            .replace(REGEX_UNCLOSED_TRAILING_TAG, "")
             .replace(REGEX_BREAK_TOKENS, "")
             .length
     }
 
     /**
-     * Menyuntikkan atau memperbarui override tag visual (`\pos`, `\frz`, `\frx`, `\fry`,
-     * `\fscx`, `\fscy`, `\clip`) tepat di dalam kurung kurawal pertama di PALING DEPAN baris.
-     * Menjamin tidak ada tag duplikat dan tetap mempertahankan blok kurawal `{...}` lainnya.
+     * Mem-parsing seluruh blok tag override `{...}` yang berurutan di awal baris dialog
+     * (sebelum karakter teks pertama) ke dalam satu struktur [LinkedHashMap] (`key -> \tagValue`),
+     * sambil tetap mempertahankan blok tag inline yang berada di tengah kalimat.
+     */
+    fun parseHeadTagMap(rawText: String): LinkedHashMap<String, String> {
+        return parseLeadingBlocks(rawText).tagMap
+    }
+
+    /**
+     * Menyuntikkan atau memperbarui override tag (`\b`, `\i`, `\u`, `\s`, `\c`, `\2c`, `\3c`, `\4c`,
+     * `\pos`, `\move`, `\frz`, `\fscx`, `\fscy`, `\clip`, dll.) ke dalam satu struktur
+     * `LinkedHashMap<String, String>` terpusat, menimpa nilai kunci yang sesuai, lalu merakitnya kembali
+     * menjadi satu blok `{...}` tunggal di awal dialog tanpa menyentuh blok tag inline di tengah kalimat.
      */
     fun injectOrUpdateHeadTags(
         rawText: String,
         tagUpdates: Map<String, String>,
     ): String {
-        var headInner = ""
-        var restBody = rawText
+        val parsed = parseLeadingBlocks(rawText)
+        val tagMap = parsed.tagMap
 
-        val leadMatch = REGEX_LEAD_BLOCK.find(rawText)
-        if (leadMatch != null) {
-            headInner = leadMatch.groupValues[1]
-            restBody = leadMatch.groupValues[2]
-        }
-
-        for ((tagName, formattedTag) in tagUpdates) {
-            val regex = STATIC_TAG_REGEX[tagName] ?: continue
-            // Bersihkan duplikat tag sejenis di dalam blok kurawal pada sisa kalimat tanpa menghapus kurawal komentar
-            restBody = REGEX_ASS_TAG_GROUP.replace(restBody) { matchResult ->
-                val inner = matchResult.groupValues[1].replace(regex, "")
-                "{$inner}"
-            }
-
-            headInner = if (regex.containsMatchIn(headInner)) {
-                headInner.replace(regex) { formattedTag }
+        for ((rawKey, rawValue) in tagUpdates) {
+            val extractedTokens = extractIndividualTags(rawValue)
+            if (extractedTokens.isNotEmpty()) {
+                for (token in extractedTokens) {
+                    val canonicalKey = resolveCanonicalTagKey(token) ?: normalizeExplicitKey(rawKey)
+                    if (canonicalKey.isNotEmpty()) {
+                        val normalizedToken = if (canonicalKey == "c" && token.startsWith("\\1c")) {
+                            "\\c" + token.removePrefix("\\1c")
+                        } else {
+                            token
+                        }
+                        if (canonicalKey == "move") tagMap.remove("pos")
+                        if (canonicalKey == "pos") tagMap.remove("move")
+                        tagMap[canonicalKey] = normalizedToken
+                    }
+                }
             } else {
-                if (tagName == "pos") {
-                    formattedTag + headInner
-                } else {
-                    headInner + formattedTag
+                val canonicalKey = normalizeExplicitKey(rawKey)
+                val trimmedVal = rawValue.trim().removeSurrounding("{", "}")
+                if (canonicalKey.isNotEmpty() && trimmedVal.isNotEmpty()) {
+                    val formattedVal = if (trimmedVal.startsWith("\\")) trimmedVal else "\\$trimmedVal"
+                    if (canonicalKey == "move") tagMap.remove("pos")
+                    if (canonicalKey == "pos") tagMap.remove("move")
+                    tagMap[canonicalKey] = formattedVal
                 }
             }
         }
 
-        return "{$headInner}$restBody"
+        return assembleSingleHeadBlock(
+            tagMap = tagMap,
+            preservedComments = parsed.preservedComments,
+            body = parsed.body,
+        )
+    }
+
+    /**
+     * Toggle tag format `B` (`\b1`/`\b0`), `I` (`\i1`/`\i0`), `U` (`\u1`/`\u0`), atau `S` (`\s1`/`\s0`)
+     * di dalam map blok `{...}` tunggal di awal dialog tanpa menyisipkan string di posisi kursor.
+     */
+    fun toggleFormatTag(
+        rawText: String,
+        tagKey: String,
+        styleDefaultEnabled: Boolean = false,
+    ): String {
+        val cleanKey = normalizeExplicitKey(tagKey)
+        if (cleanKey !in setOf("b", "i", "u", "s")) return rawText
+
+        val currentMap = parseHeadTagMap(rawText)
+        val existingToken = currentMap[cleanKey]
+        val isCurrentlyEnabled = when (existingToken) {
+            "\\${cleanKey}1" -> true
+            "\\${cleanKey}0" -> false
+            else -> styleDefaultEnabled
+        }
+        val nextValue = if (isCurrentlyEnabled) "\\${cleanKey}0" else "\\${cleanKey}1"
+        return injectOrUpdateHeadTags(rawText, mapOf(cleanKey to nextValue))
+    }
+
+    /**
+     * Menimpa tag warna (`\c`, `\2c`, `\3c`, `\4c` beserta alpha `\1a`–`\4a` bila ada)
+     * ke dalam satu blok `{...}` tunggal di awal dialog tanpa menyisipkan di posisi kursor.
+     */
+    fun applyColorOverrideTag(
+        rawText: String,
+        formattedColorTagBlock: String,
+    ): String {
+        val parsed = parseLeadingBlocks(rawText)
+        val tagMap = parsed.tagMap
+        val tokens = extractIndividualTags(formattedColorTagBlock)
+
+        var updatedColorSlot: String? = null
+        var hasAlphaToken = false
+
+        for (token in tokens) {
+            val key = resolveCanonicalTagKey(token) ?: continue
+            val normalizedToken = if (key == "c" && token.startsWith("\\1c")) {
+                "\\c" + token.removePrefix("\\1c")
+            } else {
+                token
+            }
+            tagMap[key] = normalizedToken
+            if (key in setOf("c", "2c", "3c", "4c")) {
+                updatedColorSlot = key
+            } else if (key in setOf("1a", "2a", "3a", "4a")) {
+                hasAlphaToken = true
+            }
+        }
+
+        // Jika warna baru bersifat solid (tanpa token alpha), bersihkan alpha slot lama yang sejenis
+        if (updatedColorSlot != null && !hasAlphaToken) {
+            val correspondingAlphaKey = when (updatedColorSlot) {
+                "c" -> "1a"
+                "2c" -> "2a"
+                "3c" -> "3a"
+                "4c" -> "4a"
+                else -> null
+            }
+            if (correspondingAlphaKey != null) {
+                tagMap.remove(correspondingAlphaKey)
+            }
+        }
+
+        return assembleSingleHeadBlock(
+            tagMap = tagMap,
+            preservedComments = parsed.preservedComments,
+            body = parsed.body,
+        )
     }
 
     fun upsertPosTag(rawAss: String, x: Int, y: Int): String =
         injectOrUpdateHeadTags(rawAss, mapOf("pos" to "\\pos($x,$y)"))
+
+    /**
+     * Mem-parsing seluruh blok `{...}` yang berurutan di awal baris (sebelum karakter teks pertama),
+     * termasuk memulihkan blok yang terpecah/bersarang, ke dalam [LeadingParseResult].
+     */
+    private fun parseLeadingBlocks(rawText: String): LeadingParseResult {
+        val tagMap = LinkedHashMap<String, String>()
+        val preservedComments = ArrayList<String>(1)
+        var index = 0
+        val len = rawText.length
+
+        while (index < len && rawText[index] == '{') {
+            var depth = 0
+            var closeIdx = -1
+            var cursor = index
+            while (cursor < len) {
+                val ch = rawText[cursor]
+                if (ch == '{') {
+                    depth++
+                } else if (ch == '}') {
+                    depth--
+                    if (depth == 0) {
+                        closeIdx = cursor
+                        break
+                    }
+                }
+                cursor++
+            }
+
+            if (closeIdx == -1) break
+
+            val rawGroup = rawText.substring(index + 1, closeIdx)
+            if (rawGroup.contains('\\') || rawGroup.isBlank()) {
+                // Jika terdapat blok kurawal bersarang akibat penyisipan kursor lama (misal {\fsc{\c&HFFFFFF&}y191}),
+                // ekstrak blok dalam terlebih dahulu lalu pulihkan blok luarnya.
+                val nestedMatches = REGEX_ASS_TAGS.findAll(rawGroup).toList()
+                val repairedOuter = if (nestedMatches.isNotEmpty()) {
+                    var temp = rawGroup
+                    for (m in nestedMatches) {
+                        temp = temp.replace(m.value, "")
+                    }
+                    temp
+                } else {
+                    rawGroup
+                }
+
+                for (token in extractIndividualTags(repairedOuter)) {
+                    val key = resolveCanonicalTagKey(token) ?: continue
+                    val normalizedToken = if (key == "c" && token.startsWith("\\1c")) {
+                        "\\c" + token.removePrefix("\\1c")
+                    } else {
+                        token
+                    }
+                    tagMap[key] = normalizedToken
+                }
+
+                for (m in nestedMatches) {
+                    for (token in extractIndividualTags(m.value)) {
+                        val key = resolveCanonicalTagKey(token) ?: continue
+                        val normalizedToken = if (key == "c" && token.startsWith("\\1c")) {
+                            "\\c" + token.removePrefix("\\1c")
+                        } else {
+                            token
+                        }
+                        tagMap[key] = normalizedToken
+                    }
+                }
+            } else {
+                // Pertahankan blok komentar murni tanpa backslash (misal {とても嬉しくて...})
+                preservedComments.add("{$rawGroup}")
+            }
+
+            index = closeIdx + 1
+        }
+
+        val body = rawText.substring(index)
+        return LeadingParseResult(
+            tagMap = tagMap,
+            preservedComments = preservedComments,
+            body = body,
+        )
+    }
+
+    private fun assembleSingleHeadBlock(
+        tagMap: LinkedHashMap<String, String>,
+        preservedComments: List<String>,
+        body: String,
+    ): String {
+        val headBlock = if (tagMap.isEmpty()) {
+            ""
+        } else {
+            buildString {
+                append('{')
+                for (tag in tagMap.values) {
+                    append(tag)
+                }
+                append('}')
+            }
+        }
+        val commentsBlock = if (preservedComments.isEmpty()) "" else preservedComments.joinToString("")
+        return headBlock + commentsBlock + body
+    }
+
+    /**
+     * Memecah isi blok `{...}` menjadi daftar token `\tag...` individual.
+     */
+    private fun extractIndividualTags(rawBlockOrTag: String): List<String> {
+        val cleaned = rawBlockOrTag.trim().removePrefix("{").removeSuffix("}")
+        if (cleaned.isEmpty() || !cleaned.contains('\\')) return emptyList()
+
+        val result = ArrayList<String>(6)
+        var i = cleaned.indexOf('\\')
+        val len = cleaned.length
+
+        while (i in 0 until len) {
+            if (cleaned.startsWith("\\t(", i)) {
+                var parenDepth = 0
+                var end = i + 2
+                while (end < len) {
+                    val c = cleaned[end]
+                    if (c == '(') parenDepth++
+                    else if (c == ')') {
+                        parenDepth--
+                        if (parenDepth <= 0) {
+                            end++
+                            break
+                        }
+                    }
+                    end++
+                }
+                val token = cleaned.substring(i, end).trim().replace("{", "").replace("}", "")
+                if (token.length > 1) result.add(token)
+                i = cleaned.indexOf('\\', end)
+            } else {
+                val nextSlash = cleaned.indexOf('\\', i + 1)
+                val end = if (nextSlash == -1) len else nextSlash
+                val token = cleaned.substring(i, end).trim().replace("{", "").replace("}", "")
+                if (token.length > 1) result.add(token)
+                i = nextSlash
+            }
+        }
+        return result
+    }
+
+    /**
+     * Menentukan kunci kanonis untuk satu token tag ASS (misal `\pos(960,965)` -> `"pos"`).
+     * Pemisahan nama tag & argumen yang ketat memastikan prefiks yang mirip tidak pernah bertabrakan:
+     * - `\b` tidak menyentuh `\bord`, `\blur`, `\be`
+     * - `\fs` tidak menyentuh `\fscx`, `\fscy`, `\fsp`
+     * - `\frz`, `\frx`, `\fry` terpisah dan tidak menyentuh `\fn`
+     * - `\p` tidak menyentuh `\pos`
+     */
+    private fun resolveCanonicalTagKey(tagToken: String): String? {
+        val body = tagToken.trim().removePrefix("\\")
+        if (body.isEmpty()) return null
+
+        return when {
+            body.startsWith("pos(") -> "pos"
+            body.startsWith("move(") -> "move"
+            body.startsWith("iclip(") || body.startsWith("clip(") -> "clip"
+            body.startsWith("fad(") || body.startsWith("fade(") -> "fad"
+            body.startsWith("org(") -> "org"
+            body.startsWith("t(") -> "t"
+            body.startsWith("1c") || (body.startsWith("c") && (body.length == 1 || body[1] == '&')) -> "c"
+            body.startsWith("2c") -> "2c"
+            body.startsWith("3c") -> "3c"
+            body.startsWith("4c") -> "4c"
+            body.startsWith("1a") -> "1a"
+            body.startsWith("2a") -> "2a"
+            body.startsWith("3a") -> "3a"
+            body.startsWith("4a") -> "4a"
+            body.startsWith("alpha") -> "alpha"
+            body.startsWith("fscx") -> "fscx"
+            body.startsWith("fscy") -> "fscy"
+            body.startsWith("fsp") -> "fsp"
+            body.startsWith("frz") -> "frz"
+            body.startsWith("frx") -> "frx"
+            body.startsWith("fry") -> "fry"
+            body.startsWith("fr") && (body.length == 2 || body[2].isDigit() || body[2] == '-' || body[2] == '.') -> "frz"
+            body.startsWith("fax") -> "fax"
+            body.startsWith("fay") -> "fay"
+            body.startsWith("fe") && (body.length == 2 || body[2].isDigit()) -> "fe"
+            body.startsWith("fn") -> "fn"
+            body.startsWith("fs") && (body.length == 2 || body[2].isDigit() || body[2] == '+' || body[2] == '-' || body[2] == '.') -> "fs"
+            body.startsWith("an") && body.length >= 3 && body[2].isDigit() -> "an"
+            body.startsWith("a") && (body.length == 1 || body[1].isDigit()) -> "a"
+            body.startsWith("xbord") -> "xbord"
+            body.startsWith("ybord") -> "ybord"
+            body.startsWith("bord") -> "bord"
+            body.startsWith("xshad") -> "xshad"
+            body.startsWith("yshad") -> "yshad"
+            body.startsWith("shad") -> "shad"
+            body.startsWith("blur") -> "blur"
+            body.startsWith("be") && (body.length == 2 || body[2].isDigit() || body[2] == '.') -> "be"
+            body.startsWith("b") && (body.length == 1 || body[1].isDigit()) -> "b"
+            body.startsWith("i") && (body.length == 1 || body[1].isDigit()) -> "i"
+            body.startsWith("u") && (body.length == 1 || body[1].isDigit()) -> "u"
+            body.startsWith("s") && (body.length == 1 || body[1].isDigit()) -> "s"
+            body.startsWith("pbo") -> "pbo"
+            body.startsWith("p") && (body.length == 1 || body[1].isDigit()) -> "p"
+            body.startsWith("q") && (body.length == 1 || body[1].isDigit()) -> "q"
+            else -> REGEX_TAG_KEY_PREFIX.find(body)?.groupValues?.get(1)?.lowercase()
+        }
+    }
+
+    private fun normalizeExplicitKey(rawKey: String): String {
+        val cleaned = rawKey.trim().removePrefix("\\").lowercase()
+        return if (cleaned == "1c") "c" else cleaned
+    }
 
     /**
      * Mem-parsing posisi anchor default dan transformasi visual dari tag ASS pada baris aktif.
@@ -252,7 +558,10 @@ object DialogueTokenizer {
         playResX: Int = 1920,
         playResY: Int = 1080,
     ): SubtitleVisualTransform {
-        val an = style.alignment.coerceIn(1, 9)
+        val headTags = parseHeadTagMap(rawText)
+        val overrideAn = headTags["an"]?.removePrefix("\\an")?.trim()?.toIntOrNull()
+            ?: REGEX_PARSE_AN.find(rawText)?.groupValues?.get(1)?.toIntOrNull()
+        val an = (overrideAn ?: style.alignment).coerceIn(1, 9)
         val defaultX = when (an) {
             1, 4, 7 -> max(40, style.marginL).toFloat()
             3, 6, 9 -> (playResX - max(40, style.marginR)).toFloat()
@@ -272,34 +581,32 @@ object DialogueTokenizer {
         var fry = 0f
         var fscx = 100f
         var fscy = 100f
-        var clipRect: IntArray? = null
 
-        REGEX_PARSE_POS.find(rawText)?.let { m ->
+        val posSource = headTags["pos"] ?: rawText
+        REGEX_PARSE_POS.find(posSource)?.let { m ->
             posX = m.groupValues[1].toFloatOrNull() ?: defaultX
             posY = m.groupValues[2].toFloatOrNull() ?: defaultY
             hasCustomPos = true
         }
-        REGEX_PARSE_FRZ.find(rawText)?.let { m ->
+        val frzSource = headTags["frz"] ?: rawText
+        REGEX_PARSE_FRZ.find(frzSource)?.let { m ->
             frz = m.groupValues[1].toFloatOrNull() ?: 0f
         }
-        REGEX_PARSE_FRX.find(rawText)?.let { m ->
+        val frxSource = headTags["frx"] ?: rawText
+        REGEX_PARSE_FRX.find(frxSource)?.let { m ->
             frx = m.groupValues[1].toFloatOrNull() ?: 0f
         }
-        REGEX_PARSE_FRY.find(rawText)?.let { m ->
+        val frySource = headTags["fry"] ?: rawText
+        REGEX_PARSE_FRY.find(frySource)?.let { m ->
             fry = m.groupValues[1].toFloatOrNull() ?: 0f
         }
-        REGEX_PARSE_FSCX.find(rawText)?.let { m ->
+        val fscxSource = headTags["fscx"] ?: rawText
+        REGEX_PARSE_FSCX.find(fscxSource)?.let { m ->
             fscx = m.groupValues[1].toFloatOrNull() ?: 100f
         }
-        REGEX_PARSE_FSCY.find(rawText)?.let { m ->
+        val fscySource = headTags["fscy"] ?: rawText
+        REGEX_PARSE_FSCY.find(fscySource)?.let { m ->
             fscy = m.groupValues[1].toFloatOrNull() ?: 100f
-        }
-        REGEX_PARSE_CLIP.find(rawText)?.let { m ->
-            val x1 = m.groupValues[1].toFloatOrNull()?.roundToInt() ?: 0
-            val y1 = m.groupValues[2].toFloatOrNull()?.roundToInt() ?: 0
-            val x2 = m.groupValues[3].toFloatOrNull()?.roundToInt() ?: playResX
-            val y2 = m.groupValues[4].toFloatOrNull()?.roundToInt() ?: playResY
-            clipRect = intArrayOf(x1, y1, x2, y2)
         }
 
         return SubtitleVisualTransform(
@@ -312,7 +619,6 @@ object DialogueTokenizer {
             fry = fry,
             fscx = fscx,
             fscy = fscy,
-            clipRect = clipRect,
         )
     }
 
